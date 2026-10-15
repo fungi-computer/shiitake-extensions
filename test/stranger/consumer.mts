@@ -1,0 +1,42 @@
+/// <reference lib="es2023" />
+/// <reference lib="dom" />
+/// <reference lib="dom.iterable" />
+/// <reference lib="esnext.disposable" />
+import * as entry0 from "@fungi.computer/shiitake-extensions/almanac";
+export { entry0 };
+import * as entry1 from "@fungi.computer/shiitake-extensions/almanac/host";
+export { entry1 };
+import * as entry2 from "@fungi.computer/shiitake-extensions/question";
+export { entry2 };
+import * as entry3 from "@fungi.computer/shiitake-extensions/question/client";
+export { entry3 };
+import * as entry4 from "@fungi.computer/shiitake-extensions/question/host";
+export { entry4 };
+import * as entry5 from "@fungi.computer/shiitake-extensions/goal";
+export { entry5 };
+import * as entry6 from "@fungi.computer/shiitake-extensions/goal/host";
+export { entry6 };
+import * as entry7 from "@fungi.computer/shiitake-extensions/loop";
+export { entry7 };
+import * as entry8 from "@fungi.computer/shiitake-extensions/loop/host";
+export { entry8 };
+import * as entry9 from "@fungi.computer/shiitake-extensions/roster";
+export { entry9 };
+import * as entry10 from "@fungi.computer/shiitake-extensions/plan";
+export { entry10 };
+import * as entry11 from "@fungi.computer/shiitake-extensions/plan/host";
+export { entry11 };
+import * as entry12 from "@fungi.computer/shiitake-extensions/skills/source";
+export { entry12 };
+import * as entry13 from "@fungi.computer/shiitake-extensions/skills";
+export { entry13 };
+import * as entry14 from "@fungi.computer/shiitake-extensions/home";
+export { entry14 };
+import * as entry15 from "@fungi.computer/shiitake-extensions/home/host";
+export { entry15 };
+import * as entry16 from "@fungi.computer/shiitake-extensions/goal/client";
+export { entry16 };
+import * as entry17 from "@fungi.computer/shiitake-extensions/loop/client";
+export { entry17 };
+import * as entry18 from "@fungi.computer/shiitake-extensions/plan/client";
+export { entry18 };

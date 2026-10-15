@@ -1,0 +1,146 @@
+{
+  "name": "@fungi.computer/shiitake-extensions",
+  "version": "0.0.0",
+  "private": false,
+  "description": "Botanical's product Shiitake extensions: goal, loop and Almanac on the generic extension surface",
+  "type": "module",
+  "exports": {
+    "./almanac": {
+      "types": "./dist/almanac/contract.d.ts",
+      "import": "./dist/almanac/contract.js"
+    },
+    "./almanac/host": {
+      "types": "./dist/almanac/host.d.ts",
+      "import": "./dist/almanac/host.js"
+    },
+    "./question": {
+      "types": "./dist/question/contract.d.ts",
+      "import": "./dist/question/contract.js"
+    },
+    "./question/client": {
+      "types": "./dist/question/client.d.ts",
+      "import": "./dist/question/client.js"
+    },
+    "./question/host": {
+      "types": "./dist/question/host.d.ts",
+      "import": "./dist/question/host.js"
+    },
+    "./goal": {
+      "types": "./dist/goal/contract.d.ts",
+      "import": "./dist/goal/contract.js"
+    },
+    "./goal/host": {
+      "types": "./dist/goal/host.d.ts",
+      "import": "./dist/goal/host.js"
+    },
+    "./loop": {
+      "types": "./dist/loop/contract.d.ts",
+      "import": "./dist/loop/contract.js"
+    },
+    "./loop/host": {
+      "types": "./dist/loop/host.d.ts",
+      "import": "./dist/loop/host.js"
+    },
+    "./roster": {
+      "types": "./dist/roster.d.ts",
+      "import": "./dist/roster.js"
+    },
+    "./plan": {
+      "types": "./dist/plan/contract.d.ts",
+      "import": "./dist/plan/contract.js"
+    },
+    "./plan/host": {
+      "types": "./dist/plan/host.d.ts",
+      "import": "./dist/plan/host.js"
+    },
+    "./skills/source": {
+      "types": "./dist/skills/source.d.ts",
+      "import": "./dist/skills/source.js"
+    },
+    "./skills": {
+      "types": "./dist/skills/host.d.ts",
+      "import": "./dist/skills/host.js"
+    },
+    "./home": {
+      "types": "./dist/home/contract.d.ts",
+      "import": "./dist/home/contract.js"
+    },
+    "./home/host": {
+      "types": "./dist/home/host.d.ts",
+      "import": "./dist/home/host.js"
+    },
+    "./goal/client": {
+      "types": "./dist/goal/client.d.ts",
+      "import": "./dist/goal/client.js"
+    },
+    "./loop/client": {
+      "types": "./dist/loop/client.d.ts",
+      "import": "./dist/loop/client.js"
+    },
+    "./plan/client": {
+      "types": "./dist/plan/client.d.ts",
+      "import": "./dist/plan/client.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "clean": "node --input-type=module --eval \"import { rm } from 'node:fs/promises'; await rm('dist', { recursive: true, force: true });\"",
+    "build": "pnpm run clean && tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "lint": "eslint src test --max-warnings=0 && ../../node_modules/.bin/oxlint --config ../../oxlint.config.ts --deny-warnings src test",
+    "format:check": "node ../../tooling/repository/scripts/format-package-check.mjs",
+    "lint:anti-slop": "node ../../tooling/repository/scripts/lint-package-anti-slop.mjs",
+    "pack": "mkdir -p ../../.botanical/shiitake-extensions-pack && pnpm pack --pack-destination ../../.botanical/shiitake-extensions-pack",
+    "stranger": "tsx ../../tooling/repository/src/artifacts/cli.ts --repo-root ../.. .",
+    "smoke": "node test/stranger/runtime.mjs",
+    "prepack": "node scripts/prepare-package.mjs",
+    "docs": "node ../../apps/package-docs/scripts/build-sites.mjs --check shiitake-extensions"
+  },
+  "dependencies": {
+    "@fungi.computer/almanac": "workspace:*",
+    "@fungi.computer/cairn": "workspace:*",
+    "@fungi.computer/knapsack": "workspace:*",
+    "@fungi.computer/mycelium": "workspace:*",
+    "@fungi.computer/shiitake": "workspace:*",
+    "@fungi.computer/whistle": "workspace:*",
+    "effect": "4.0.2",
+    "papaparse": "5.7.0",
+    "zod": "4.4.3",
+    "@fungi.computer/gills": "workspace:*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.99.2",
+    "@types/node": "24.13.3",
+    "@types/papaparse": "5.5.2",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11",
+    "@fungi.computer/mule": "workspace:*"
+  },
+  "botanical": {
+    "role": "package",
+    "operations": {
+      "lint": "required",
+      "typecheck": "required",
+      "build": "required",
+      "test": "required",
+      "docs": "required",
+      "pack": "required",
+      "smoke": "required",
+      "stranger": "required"
+    }
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fungi-computer/shiitake-extensions.git"
+  },
+  "publishConfig": {
+    "directory": ".botanical/package",
+    "linkDirectory": false
+  }
+}

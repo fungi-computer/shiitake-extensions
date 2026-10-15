@@ -1,0 +1,111 @@
+{
+  "expectedTarballFiles": [
+    "package/LICENSE",
+    "package/README.md",
+    "package/dist/almanac/contract.d.ts",
+    "package/dist/almanac/contract.js",
+    "package/dist/almanac/host.d.ts",
+    "package/dist/almanac/host.js",
+    "package/dist/goal/client.d.ts",
+    "package/dist/goal/client.js",
+    "package/dist/goal/contract.d.ts",
+    "package/dist/goal/contract.js",
+    "package/dist/goal/host.d.ts",
+    "package/dist/goal/host.js",
+    "package/dist/home/contract.d.ts",
+    "package/dist/home/contract.js",
+    "package/dist/home/host.d.ts",
+    "package/dist/home/host.js",
+    "package/dist/home/routing.d.ts",
+    "package/dist/home/routing.js",
+    "package/dist/internal/catalog.d.ts",
+    "package/dist/internal/catalog.js",
+    "package/dist/internal/cron.d.ts",
+    "package/dist/internal/cron.js",
+    "package/dist/internal/history.d.ts",
+    "package/dist/internal/history.js",
+    "package/dist/loop/client.d.ts",
+    "package/dist/loop/client.js",
+    "package/dist/loop/contract.d.ts",
+    "package/dist/loop/contract.js",
+    "package/dist/loop/host.d.ts",
+    "package/dist/loop/host.js",
+    "package/dist/plan/client.d.ts",
+    "package/dist/plan/client.js",
+    "package/dist/plan/contract.d.ts",
+    "package/dist/plan/contract.js",
+    "package/dist/plan/host.d.ts",
+    "package/dist/plan/host.js",
+    "package/dist/question/client.d.ts",
+    "package/dist/question/client.js",
+    "package/dist/question/contract.d.ts",
+    "package/dist/question/contract.js",
+    "package/dist/question/host.d.ts",
+    "package/dist/question/host.js",
+    "package/dist/roster.d.ts",
+    "package/dist/roster.js",
+    "package/dist/skills/host.d.ts",
+    "package/dist/skills/host.js",
+    "package/dist/skills/source.d.ts",
+    "package/dist/skills/source.js",
+    "package/package.json"
+  ],
+  "localDependencies": [
+    "../almanac",
+    "../cairn",
+    "../knapsack",
+    "../mycelium",
+    "../shiitake",
+    "../whistle",
+    "../gills"
+  ],
+  "runtimeFixture": "test/stranger/runtime.mjs",
+  "typecheckFixture": "test/stranger/consumer.mts",
+  "consumerDevDependencies": {
+    "@types/node": "24.13.3",
+    "@types/react": "18.3.3",
+    "@types/react-dom": "18.3.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "@modelcontextprotocol/sdk": "1.25.2"
+  },
+  "docs": {
+    "sigil": "list",
+    "home": {
+      "lead": "Bind product tools to the generic Shiitake extension surface.",
+      "example": {
+        "file": "home.ts",
+        "title": "Decode a loop command",
+        "caption": "Use the owned input schema; decoding does not run a Session."
+      },
+      "ladder": {
+        "start": [
+          {
+            "title": "Quickstart",
+            "href": "/quickstart/",
+            "description": "Run the first example and read its host requirements."
+          }
+        ],
+        "tasks": [
+          {
+            "title": "Examples",
+            "href": "/examples/",
+            "description": "Read worked usage and the checks that exercise it."
+          }
+        ],
+        "reference": [
+          {
+            "title": "API reference",
+            "href": "/api/",
+            "description": "Find public entrypoints and their documented contracts."
+          },
+          {
+            "title": "Install",
+            "href": "/install/",
+            "description": "Check dependencies and runtime requirements."
+          }
+        ]
+      }
+    }
+  }
+}

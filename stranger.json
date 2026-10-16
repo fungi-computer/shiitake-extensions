@@ -48,6 +48,12 @@
     "package/dist/skills/host.js",
     "package/dist/skills/source.d.ts",
     "package/dist/skills/source.js",
+    "package/dist/subagents/client.d.ts",
+    "package/dist/subagents/client.js",
+    "package/dist/subagents/contract.d.ts",
+    "package/dist/subagents/contract.js",
+    "package/dist/subagents/host.d.ts",
+    "package/dist/subagents/host.js",
     "package/package.json"
   ],
   "localDependencies": [

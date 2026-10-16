@@ -14,10 +14,14 @@ const tone = (loop: Loop): RowV1["tone"] =>
         ? "muted"
         : "settled";
 const due = (at: number) =>
-  new Date(at)
-    .toISOString()
-    .replace("T", " ")
-    .replace(/:00\.000Z$/u, " UTC");
+  new Intl.DateTimeFormat(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  }).format(at);
 /** Loop supplies its own absolute due copy and advertised stop intent. */
 export default defineClientEntry(loopContract, {
   contribute: (view): ClientContributionV1 => {

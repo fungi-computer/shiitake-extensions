@@ -74,6 +74,7 @@ helper borrows the Agent. Its owner closes it when the host's lifetime ends.
 | Almanac   | Agent-scope one-shot or recurring schedules. Each schedule targets a Session and tracks admission, retry and its next due time.                                                                                                                                                                                                                                                                                                                   |
 | Skills    | Host-supplied, read-only skill discovery. Metadata enters the prompt; `skill.load` reads a skill body or supporting file; `/skills` lists them.                                                                                                                                                                                                                                                                                                   |
 | Home      | Agent-scope choice of an attached Computer. Each run captures its scoped file tools and current attachment choice.                                                                                                                                                                                                                                                                                                                                |
+| Subagents | A read-only footer view: one row per Agent this Session sent work to or created, with its live status (working, waiting on you, idle, failed, unavailable). A row opens that Agent's conversation. It owns no relationship and no durable state.                                                                                                                                                                                                  |
 
 An active Goal is quiet system context on every run. Continuation instructions
 apply only to runs admitted by Goal with its continuation correlation; human
@@ -166,6 +167,8 @@ This package documents contracts beside source and has no generated API command.
 | `/question`, `/question/host`                  | [Question contract](src/question/contract.ts) and [definition](src/question/host.ts).                     |
 | `/plan`, `/plan/host`                          | [Plan contract](src/plan/contract.ts) and [definition](src/plan/host.ts).                                 |
 | `/skills`, `/skills/source`                    | [Skills definition](src/skills/host.ts) and [host-owned source](src/skills/source.ts).                    |
+| `/subagents`, `/subagents/host`                | [Subagents contract](src/subagents/contract.ts) and [definition](src/subagents/host.ts).                  |
+| `/subagents/client`                            | [Subagents client entry](src/subagents/client.ts).                                                        |
 | `/goal/client`, `/loop/client`, `/plan/client` | Client entries for [Goal](src/goal/client.ts), [Loop](src/loop/client.ts) and [Plan](src/plan/client.ts). |
 | `/roster`                                      | [Product roster and grants](src/roster.ts).                                                               |
 
@@ -231,6 +234,21 @@ Install `@modelcontextprotocol/sdk@1.25.2` alongside this package when compiling
 its complete public declarations. The shared provider SDK imports those types
 through an optional peer; the packed consumer supplies it explicitly. This does
 not require a provider account or make a provider call.
+
+## Subagents
+
+The host creates `subagentsExtension({ source })` and adds `subagentsGrant`
+(`projection` only). `source.read(sessionId, limit)` returns the Agents that
+Session sent work to or created, newest first, with a count of the rest;
+`source.open` is the host's existing Agent access. Each child's status is its
+owner's own Session state: `running` is working, any open attention (a question
+or a tool approval) is waiting on you, `done` is idle and `errored` is failed. A
+child whose state cannot be read is unavailable, never idle.
+
+Rows refresh when a watcher reads the parent Session and they are at least a
+second old. While a row is working or waiting, they poll every five seconds
+until nobody has read the parent for thirty seconds. Like Home, the extension is
+composed by the host, not included in `botanicalAgentExtensions`.
 
 ## Packed consumer readiness
 

@@ -5,6 +5,11 @@ import {
 import type { RowV1 } from "@fungi.computer/gills";
 import { loopContract, type Loop } from "./contract.js";
 
+/** One footer line: the full prompt stays in the row's detail. */
+const summary = (text: string) => {
+  const line = text.replace(/\s+/gu, " ").trim();
+  return line.length <= 60 ? line : `${line.slice(0, 59)}…`;
+};
 const tone = (loop: Loop): RowV1["tone"] =>
   loop.state === "failed"
     ? "error"
@@ -24,6 +29,7 @@ const due = (at: number) =>
   }).format(at);
 /** Loop supplies its own absolute due copy and advertised stop intent. */
 export default defineClientEntry(loopContract, {
+  promptPresentation: "footer",
   contribute: (view): ClientContributionV1 => {
     if (view.status !== "running" || view.value === null)
       return {
@@ -32,12 +38,11 @@ export default defineClientEntry(loopContract, {
         timeline: { cells: [], omitted: 0 },
         waiting: null,
       };
-    const { loop, history } = view.value;
-    const waiting =
-      loop !== null && loop.state === "active" && loop.nextDueAt !== null;
+    const { loop } = view.value;
+    const waiting = loop.state === "active" && loop.nextDueAt !== null;
     return {
       chips:
-        loop === null || (loop.state !== "active" && loop.state !== "paused")
+        loop.state !== "active" && loop.state !== "paused"
           ? []
           : [
               {
@@ -50,43 +55,27 @@ export default defineClientEntry(loopContract, {
                 },
               },
             ],
-      panel:
-        loop === null
+      panel: [
+        {
+          id: "loop",
+          title: `Loop · ${loop.state} · ${loop.mode === "self_paced" ? "self-paced" : `${loop.cron?.expression ?? "fixed"} ${loop.cron?.timeZone ?? ""}`}${loop.nextDueAt === null ? "" : ` · Next ${due(loop.nextDueAt)}`} · ${summary(loop.prompt)}`,
+          detail: [loop.reason, loop.prompt]
+            .filter((part) => part !== null)
+            .join("\n")
+            .slice(0, 1024),
+          tone: tone(loop),
+        },
+        ...(loop.lastError === null
           ? []
           : [
               {
-                id: "loop",
-                title: `Loop · ${loop.state} · ${loop.mode === "self_paced" ? "self-paced" : `${loop.cron?.expression ?? "fixed"} ${loop.cron?.timeZone ?? ""}`}${loop.nextDueAt === null ? "" : ` · Next ${due(loop.nextDueAt)}`}`,
-                detail: loop.prompt.slice(0, 1024),
-                tone: tone(loop),
+                id: "error",
+                title: loop.lastError.slice(0, 4096),
+                tone: "error" as const,
               },
-              ...(loop.lastError === null
-                ? []
-                : [
-                    {
-                      id: "error",
-                      title: loop.lastError.slice(0, 4096),
-                      tone: "error" as const,
-                    },
-                  ]),
-            ],
-      timeline: {
-        omitted: history.omitted,
-        cells: history.events.map(({ event, ...cell }) => ({
-          ...cell,
-          rows: [
-            {
-              id: "loop",
-              title: `Loop ${event.state}`,
-              detail: (event.lastError ?? event.reason ?? event.prompt).slice(
-                0,
-                1024,
-              ),
-              tone: tone(event),
-            },
-          ],
-        })),
-      },
+            ]),
+      ],
+      timeline: { cells: [], omitted: 0 },
       waiting: waiting
         ? {
             summary: `Waiting until ${due(loop.nextDueAt)}`,

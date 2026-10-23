@@ -46,36 +46,27 @@ export function homeFilesRouting(
     },
     list: async (input, context) => {
       const { port, path, locate } = resolve(input.path);
-      const result = await port.list({ ...input, path }, context);
-      return {
-        ...result,
-        path: input.path,
-        entries: result.entries.map((entry) => ({
-          ...entry,
-          path: locate(entry.path),
-        })),
-      };
+      return locateSearch(
+        await port.list({ ...input, path }, context),
+        input.path,
+        locate,
+      );
     },
     glob: async (input, context) => {
       const { port, path, locate } = resolve(input.path);
-      const result = await port.glob({ ...input, path }, context);
-      return {
-        ...result,
-        path: input.path,
-        matches: result.matches.map(locate),
-      };
+      return locateSearch(
+        await port.glob({ ...input, path }, context),
+        input.path,
+        locate,
+      );
     },
     grep: async (input, context) => {
       const { port, path, locate } = resolve(input.path);
-      const result = await port.grep({ ...input, path }, context);
-      return {
-        ...result,
-        path: input.path,
-        matches: result.matches.map((match) => ({
-          ...match,
-          path: locate(match.path),
-        })),
-      };
+      return locateSearch(
+        await port.grep({ ...input, path }, context),
+        input.path,
+        locate,
+      );
     },
     replace: async (input, context) => {
       const { port, path } = resolve(input.path);
@@ -87,4 +78,19 @@ export function homeFilesRouting(
   // not introduce a second patch parser.
   const patch = home.patch?.bind(home);
   return patch === undefined ? routing : { ...routing, patch };
+}
+
+function locateSearch(
+  result: Awaited<ReturnType<FilesPort["list"]>>,
+  path: string,
+  locate: (path: string) => string,
+) {
+  return {
+    ...result,
+    path,
+    results: result.results.map((found) => ({
+      ...found,
+      path: locate(found.path),
+    })),
+  };
 }

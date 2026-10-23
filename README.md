@@ -68,27 +68,46 @@ helper borrows the Agent. Its owner closes it when the host's lifetime ends.
 | Extension | Ownership and behavior                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Ask       | Up to four open decisions per Session. The model asks or withdraws; humans answer or decline. A live waiter receives the answer, while a parked question resumes through one follow-up.                                                                                                                                                                                                                                                           |
-| Goal      | One objective per Session. The model creates, reads and completes it through `goal.*` tools; humans set, pause, resume or clear it. Three tool-less continuations pause it as stalled.                                                                                                                                                                                                                                                            |
+| Goal      | One live or paused objective per Session. The model creates, reads and completes it through `goal.*` tools; humans set, pause, resume or clear it. Esc, failed work, a block or three tool-less continuations pause it. Closing the app pauses it only if work stops without resuming; background work and runtime-auto-resumed turns keep it live. An achieved or cleared goal becomes one chat line in its history.                             |
 | Loop      | One repeated prompt per Session. It runs on a fixed cron cadence or lets its own active run request the next occurrence. Commands start, pause, resume and stop it.                                                                                                                                                                                                                                                                               |
 | Plan      | One checklist per Session. `plan.update_plan` replaces it whole, with at most one step in progress and at most 50 steps; `steps: []` clears it. The human clears it with `/plan clear` or the footer row's Clear plan action, through the same owner. `/plan` opens the full checklist in the footer; updates keep only the current step and progress visible, and a finished or cleared plan leaves the footer while its history stays in state. |
 | Almanac   | Agent-scope one-shot or recurring schedules. Each schedule targets a Session and tracks admission, retry and its next due time.                                                                                                                                                                                                                                                                                                                   |
 | Skills    | Host-supplied, read-only skill discovery. Metadata enters the prompt; `skill.load` reads a skill body or supporting file; `/skills` lists them.                                                                                                                                                                                                                                                                                                   |
 | Home      | Agent-scope choice of an attached Computer. Each run captures its scoped file tools and current attachment choice.                                                                                                                                                                                                                                                                                                                                |
-| Subagents | A read-only footer view: one row per Agent this Session sent work to or created, with its live status (working, waiting on you, idle, failed, unavailable). A row opens that Agent's conversation. It owns no relationship and no durable state.                                                                                                                                                                                                  |
+| Subagents | A read-only footer view: one row per Agent this Session sent work to or created, with its live status (working, waiting on you, idle, failed, unavailable). A row opens that Agent's conversation, and `/agents` collapses the rows to one summary row and expands them again. It owns no relationship and no durable state.                                                                                                                      |
 
 An active Goal is quiet system context on every run. Continuation instructions
 apply only to runs admitted by Goal with its continuation correlation; human
 messages receive the Goal context without that directive. Both sections are
-bounded by UTF-8 bytes. Correlated Goal turns appear as compact transcript
-notes; other extensions keep their own display policy.
+bounded by UTF-8 bytes. Goal turns stay out of the transcript; the footer shows
+only a live goal ("Pursuing goal since 14:02") or a paused one ("Goal paused
+(/goal resume)"), and each finished goal adds one chat line after its last work.
+Other extensions keep their own display policy.
 
 Known limitation: Session forks copy transcript entries without their original
 command-admission rows. Inherited Goal turns therefore lose the extension-origin
 metadata used for compact notes and appear as ordinary message bubbles.
 
 Goal pause stops continuation, not already accepted work. Model-requested
-completion or blocking is provisional until successful settlement. Human
-replacement uses the observed revision to avoid replacing a newer goal.
+completion or blocking is provisional until successful settlement; a blocked
+goal pauses and resumes like any paused goal. Only a live or paused goal asks
+before a replacement, which uses the observed revision to avoid replacing a
+newer goal; the replaced goal is recorded as cleared. When a runtime restart (a
+Hub deploy or eviction, a Local service restart) interrupts a goal turn, the
+turn resumes and the goal stays live. A live goal pauses when any turn of its
+Session fails, cannot resume or is stopped by a person (Esc), including the
+person's own messages ("The last turn failed"). A missing extension origin does
+not establish a human sender; mail and host admissions can also lack one.
+
+Goal's shared wire and durable row use `pauseCause: { kind, detail }` while
+paused and `null` while active. The closed kinds are `person`, `blocked`,
+`stalled`, `cancelled`, `failed`, and `no-terminal`; display detail is nullable
+text, never a discriminator. Only blocked/stalled goals emit `goal-blocked` or
+`goal-stalled` attention, kept out of the main inbox with `inbox: false`.
+Questions and these two Goal kinds ask for a person in Herdr activity;
+person-paused, cancelled and failed goals do not. State version 6 discards
+disposable preview Goal rows from versions 4 and 5 rather than reading the
+superseded representation.
 
 Loop tools are offered in every run. `loop.get`, `loop.start` and `loop.stop`
 work from any run of the Session, and the model may start a loop itself.
@@ -196,7 +215,7 @@ never changes Home. The Session command changes Agent state, so other Sessions
 see that choice on their next run.
 
 Each run captures its table, Home and prompt once. The tools are Knapsack's
-branded `read`, `list`, `glob` and `grep`, with `apply_patch` only when Home's
+branded `read`, `list`, `glob`, and `grep`, with `apply_patch` only when Home's
 port has a native patch engine. Bare paths and `computer://home/` use Home;
 `computer://<name>/` uses another captured attachment. Patches always use Home's
 native engine and path jail. Returned file identity stays owned by the scoped
@@ -238,12 +257,14 @@ not require a provider account or make a provider call.
 ## Subagents
 
 The host creates `subagentsExtension({ source })` and adds `subagentsGrant`
-(`projection` only). `source.read(sessionId, limit)` returns the Agents that
-Session sent work to or created, newest first, with a count of the rest;
-`source.open` is the host's existing Agent access. Each child's status is its
-owner's own Session state: `running` is working, any open attention (a question
-or a tool approval) is waiting on you, `done` is idle and `errored` is failed. A
-child whose state cannot be read is unavailable, never idle.
+(`projection` and `commands`: the human `/agents` command only collapses or
+expands the footer rows, per Session and in memory).
+`source.read(sessionId, limit)` returns the Agents that Session sent work to or
+created, newest first, with a count of the rest; `source.open` is the host's
+existing Agent access. Each child's status is its owner's own Session state:
+`running` is working, any open attention (a question or a tool approval) is
+waiting on you, `done` is idle and `errored` is failed. A child whose state
+cannot be read is unavailable, never idle.
 
 Rows refresh when a watcher reads the parent Session and they are at least a
 second old. While a row is working or waiting, they poll every five seconds
@@ -261,3 +282,12 @@ split.
 
 See [LICENSE](LICENSE) for the license and the package manifest for its public
 repository destination.
+
+## Conversation Agent composition
+
+`@fungi.computer/shiitake-extensions/roster/conversation-agents` supplies the
+shared Local, Hub and Oyster conversation-Agent composition. The host supplies
+its authorized Agent directory and SQLite owner; the roster records accepted
+creates and sends for a read-only footer without granting relationships or
+authority. Storage is prepared lazily. The host remains responsible for creation
+admission, Agent access and resource lifetime.

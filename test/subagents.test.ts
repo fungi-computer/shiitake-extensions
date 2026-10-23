@@ -1,4 +1,5 @@
 import { clientContributionSchemaV1 } from "@fungi.computer/shiitake/client-entry";
+import { bindSessionExtension } from "@fungi.computer/shiitake/client";
 import {
   defineExtension,
   ExtensionId,
@@ -184,8 +185,65 @@ it("shows a created, never-messaged Agent as idle with nothing to open", async (
   const panel = subagentsClient.contribute?.(
     (await parent.session("parent").read()).extensions[subagentsContract.id],
   ).panel;
-  expect(panel?.[0]).toMatchObject({ detail: "not messaged yet" });
+  expect(panel?.[0]).toMatchObject({ id: "summary" });
   expect(panel?.[0]?.open).toBeUndefined();
+  await bindSessionExtension(parent.session("parent"), subagentsContract).call(
+    "agents",
+    {},
+  );
+  const expandedPanel = subagentsClient.contribute?.(
+    (await parent.session("parent").read()).extensions[subagentsContract.id],
+  ).panel;
+  expect(expandedPanel?.[0]).toMatchObject({ detail: "not messaged yet" });
+  expect(expandedPanel?.[0]?.open).toBeUndefined();
+});
+
+it("reads every expanded footer row as the Agent's name and state, without who made it", async () => {
+  const fixer = await child();
+  const walker = await child();
+  const parent = await parentWith(
+    {
+      parent: [
+        {
+          agentId: "agent-fixer",
+          name: "fixer",
+          sessionId: null,
+        },
+        { agentId: "agent-walker", name: "walker", sessionId: null },
+      ],
+    },
+    {
+      "agent-fixer": childAccess(fixer),
+      "agent-walker": childAccess(walker),
+    },
+  );
+  await settle(parent, "parent", {
+    agents: [
+      {
+        agentId: "agent-fixer",
+        name: "fixer",
+        sessionId: null,
+        state: "idle",
+      },
+      {
+        agentId: "agent-walker",
+        name: "walker",
+        sessionId: null,
+        state: "idle",
+      },
+    ],
+  });
+  await bindSessionExtension(parent.session("parent"), subagentsContract).call(
+    "agents",
+    {},
+  );
+  const panel = subagentsClient.contribute?.(
+    (await parent.session("parent").read()).extensions[subagentsContract.id],
+  ).panel;
+  expect(panel?.map(({ title }) => title)).toEqual([
+    "fixer · idle",
+    "walker · idle",
+  ]);
 });
 
 it("maps working, a waiting question, a waiting approval and an unreadable child", async () => {
@@ -254,6 +312,10 @@ it("polls a working child until it settles, and opens each row at its exact conv
   await settle(parent, "parent", {
     agents: [expect.objectContaining({ state: "idle" })],
   });
+  await bindSessionExtension(parent.session("parent"), subagentsContract).call(
+    "agents",
+    {},
+  );
   const contribution = Schema.decodeUnknownSync(clientContributionSchemaV1)(
     subagentsClient.contribute?.(
       (await parent.session("parent").read()).extensions[subagentsContract.id],
@@ -296,6 +358,7 @@ it("counts sub-agents past the footer bound in one more row", () => {
   const value = Schema.encodeSync(SubagentsProjection)({
     agents: [],
     more: 3,
+    expanded: true,
   });
   const panel = subagentsClient.contribute?.({
     status: "running",
@@ -305,5 +368,104 @@ it("counts sub-agents past the footer bound in one more row", () => {
   }).panel;
   expect(panel).toEqual([
     { id: "more", title: "3 more sub-agents", tone: "muted" },
+  ]);
+});
+
+it("starts the footer collapsed on first projection and /agents expands it, then collapses it again", async () => {
+  const worker = await child();
+  await send(worker, "job", false);
+  const parent = await parentWith(
+    {
+      parent: [{ agentId: "agent-worker", name: "Worker", sessionId: "job" }],
+      empty: [],
+    },
+    { "agent-worker": childAccess(worker) },
+  );
+  await settle(parent, "parent", {
+    agents: [expect.objectContaining({ state: "working" })],
+  });
+  expect(await rows(parent, "parent")).toMatchObject({ expanded: false });
+  // The host advertises `/agents` as a slash command.
+  const slot = (await parent.session("parent").read()).extensions[
+    subagentsContract.id
+  ];
+  expect(slot?.status === "running" ? slot.catalog : null).toMatchObject({
+    commands: [
+      { id: "agents", projections: { slash: { aliases: ["agents"] } } },
+    ],
+  });
+  const panel = async () =>
+    subagentsClient.contribute?.(
+      (await parent.session("parent").read()).extensions[subagentsContract.id],
+    ).panel;
+  expect(await panel()).toEqual([
+    {
+      id: "summary",
+      title: "1 sub-agent · 1 working · /agents shows them",
+      tone: "running",
+    },
+  ]);
+
+  const agents = bindSessionExtension(
+    parent.session("parent"),
+    subagentsContract,
+  );
+  expect(await agents.call("agents", {})).toEqual({ type: "done" });
+  await settle(parent, "parent", { expanded: true });
+  expect((await panel())?.map(({ id }) => id)).toEqual(["agent-worker"]);
+
+  expect(await agents.call("agents", {})).toEqual({ type: "done" });
+  await settle(parent, "parent", { expanded: false });
+  expect(await panel()).toEqual([
+    {
+      id: "summary",
+      title: "1 sub-agent · 1 working · /agents shows them",
+      tone: "running",
+    },
+  ]);
+
+  await worker.drain();
+});
+
+it("/agents with nothing to list changes nothing and says so", async () => {
+  const parent = await parentWith({ empty: [] }, {});
+  await settle(parent, "empty", { agents: [], expanded: false });
+  const result = await bindSessionExtension(
+    parent.session("empty"),
+    subagentsContract,
+  ).call("agents", {});
+  expect(result).toMatchObject({
+    type: "done",
+    notice: { message: "This conversation has no sub-agents." },
+  });
+  await settle(parent, "empty", { expanded: false });
+});
+
+it("a collapsed footer still says a sub-agent is waiting on you, and marks the summary as needing attention", async () => {
+  const approving = await child(grantAll([approvalExtension]));
+  await send(approving, "write");
+  await approving.session("write").extension(approvalId).call("ask", {});
+  const parent = await parentWith(
+    {
+      parent: [
+        { agentId: "agent-approving", name: "Approving", sessionId: "write" },
+      ],
+    },
+    { "agent-approving": childAccess(approving) },
+  );
+  await settle(parent, "parent", {
+    agents: [expect.objectContaining({ state: "waiting" })],
+  });
+  await settle(parent, "parent", { expanded: false });
+  expect(
+    subagentsClient.contribute?.(
+      (await parent.session("parent").read()).extensions[subagentsContract.id],
+    ).panel,
+  ).toEqual([
+    {
+      id: "summary",
+      title: "1 sub-agent · 1 waiting on you · /agents shows them",
+      tone: "attention",
+    },
   ]);
 });

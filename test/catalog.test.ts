@@ -41,6 +41,7 @@ function answering(answers: (string | boolean)[]) {
   const asked: WhistlePrompt[] = [];
   const notices: string[] = [];
   const interaction: WhistleInteraction = {
+    run: (operation) => operation(),
     signal: new AbortController().signal,
     prompt: (prompt) => {
       asked.push(prompt);
@@ -119,7 +120,7 @@ it("runs the /goal conversation on the server: ask, set, confirm a replacement",
     });
     expect(controls.asked[0]).toMatchObject({
       type: "choice",
-      message: "Active: Plant moss",
+      message: "Pursuing goal: Plant moss",
       options: [
         { value: "pause", label: "Pause goal" },
         { value: "clear", label: "Clear goal" },

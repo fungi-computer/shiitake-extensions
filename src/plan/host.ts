@@ -22,10 +22,17 @@ import { z } from "zod";
 import { catalog, done } from "../internal/catalog.js";
 import { Plan, PlanInput, planContract, planIsOpen } from "./contract.js";
 
+/** The rules the model follows; the describe page and an open plan's prompt share them. */
+const rules =
+  "Use it for multi-step work, with at most one in-progress step; replace the whole plan on each update, and pass steps:[] to clear a plan that no longer applies. A completed checklist is not proof of goal completion.";
+
 const config = Object.freeze({
   promptLimit: 2_000,
-  guide:
-    "Session checklist tool in execute: plan.update_plan({explanation?,steps:[{step,status:'pending'|'in_progress'|'completed'}]}). Find it with forage.search({query:'plan'}) and forage.describe. Use it for multi-step work, with at most one in-progress step; replace the whole plan on each update, and pass steps:[] to clear a plan that no longer applies. A completed checklist is not proof of goal completion.",
+  idle: "Multi-step work? forage.describe({path:'plan'}) first.",
+  moduleDescription:
+    "Session checklist tool: update_plan({explanation?,steps:[{step,status:'pending'|'in_progress'|'completed'}]}). " +
+    rules,
+  guide: "Session checklist tool: plan.update_plan. " + rules,
 });
 const collections = {
   history: defineCollection(
@@ -139,13 +146,14 @@ export const planExtension: RosteredExtensionV0 = defineExtension({
         Effect.map((found) => [
           {
             name: "plan",
-            text: (
-              ctx.config.guide +
-              "\n" +
-              (Option.isSome(found) && found.value.plan.steps.length > 0
-                ? JSON.stringify(found.value.plan)
-                : "No current plan.")
-            ).slice(0, ctx.config.promptLimit),
+            text:
+              Option.isSome(found) && found.value.plan.steps.length > 0
+                ? (
+                    ctx.config.guide +
+                    "\n" +
+                    JSON.stringify(found.value.plan)
+                  ).slice(0, ctx.config.promptLimit)
+                : ctx.config.idle,
           },
         ]),
       ),
@@ -155,7 +163,7 @@ export const planExtension: RosteredExtensionV0 = defineExtension({
           Mycelium.module({
             id: "botanical.session-plan",
             name: "plan",
-            description: "Session checklist planning tools.",
+            description: ctx.config.moduleDescription,
             operations: {
               update_plan: Mycelium.operation({
                 replay: "safe",

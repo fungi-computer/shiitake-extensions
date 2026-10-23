@@ -9,7 +9,7 @@ import { questionContract } from "../src/question/contract.js";
 import { questionExtension } from "../src/question/host.js";
 import { grantAll, openAgent, sqliteOwner } from "./fixtures/host.js";
 
-it("reopens the installed Goal/Loop/Plan state versions without rewriting their records", async () => {
+it("reopens current Goal/Loop/Plan state versions without rewriting their records", async () => {
   const store = sqliteOwner();
   const roster = grantAll([goalExtension, loopExtension, planExtension]);
   let host = await openAgent(store.owner, roster);
@@ -21,10 +21,9 @@ it("reopens the installed Goal/Loop/Plan state versions without rewriting their 
       requestId: "installed-goal",
     });
     await host.close();
-    // These are the ledger versions written by the installed pre-reset build.
-    // Its collection schemas are unchanged; only the declarations were reset.
+    // Current records keep their representation across a cold reopen.
     for (const [id, version] of [
-      ["botanical-session-goal", 4],
+      ["botanical-session-goal", 7],
       ["botanical-session-loop", 3],
       ["botanical-session-plan", 2],
     ] as const)
@@ -45,6 +44,7 @@ it("reopens the installed Goal/Loop/Plan state versions without rewriting their 
     const reopened = bindSessionExtension(session, goalContract);
     expect(reopened.view(await session.read())).toMatchObject({
       status: "running",
+      // A graceful close leaves the goal live; the store reopens it as it was.
       value: { goal: admitted.goal },
     });
     expect(records()).toEqual(before);
@@ -55,7 +55,7 @@ it("reopens the installed Goal/Loop/Plan state versions without rewriting their 
         )
         .toArray(),
     ).toEqual([
-      { extension_id: "botanical-session-goal", state_version: 4 },
+      { extension_id: "botanical-session-goal", state_version: 7 },
       { extension_id: "botanical-session-loop", state_version: 3 },
       { extension_id: "botanical-session-plan", state_version: 2 },
     ]);
@@ -103,6 +103,7 @@ it("reopens Question v1 while leaving the retired installed Ask ledger untouched
       bindSessionExtension(session, goalContract).view(snapshot),
     ).toMatchObject({
       status: "running",
+      // A graceful close leaves the goal live; the store reopens it as it was.
       value: { goal: admitted.goal },
     });
     expect(
@@ -120,7 +121,7 @@ it("reopens Question v1 while leaving the retired installed Ask ledger untouched
         .toArray(),
     ).toEqual([
       { extension_id: "botanical-session-ask", state_version: 1 },
-      { extension_id: "botanical-session-goal", state_version: 4 },
+      { extension_id: "botanical-session-goal", state_version: 7 },
       { extension_id: "botanical-session-loop", state_version: 3 },
       { extension_id: "botanical-session-plan", state_version: 2 },
       { extension_id: "botanical-session-question", state_version: 1 },

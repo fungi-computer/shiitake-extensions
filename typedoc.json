@@ -1,0 +1,32 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "extends": "../../tooling/docs/typedoc.base.json",
+  "name": "@fungi.computer/shiitake-extensions",
+  "entryPoints": [
+    "src/almanac/contract.ts",
+    "src/almanac/host.ts",
+    "src/question/contract.ts",
+    "src/question/client.ts",
+    "src/question/host.ts",
+    "src/goal/contract.ts",
+    "src/goal/host.ts",
+    "src/loop/contract.ts",
+    "src/loop/host.ts",
+    "src/roster.ts",
+    "src/roster/conversation-agents.ts",
+    "src/plan/contract.ts",
+    "src/plan/host.ts",
+    "src/skills/source.ts",
+    "src/skills/host.ts",
+    "src/home/contract.ts",
+    "src/home/host.ts",
+    "src/goal/client.ts",
+    "src/loop/client.ts",
+    "src/plan/client.ts",
+    "src/subagents/contract.ts",
+    "src/subagents/host.ts",
+    "src/subagents/client.ts"
+  ],
+  "tsconfig": "tsconfig.build.json",
+  "out": "docs/api"
+}

@@ -34,15 +34,24 @@ const TimeZone = Schema.String.pipe(
 
 /** One durable schedule as every caller sees it. */
 export const Schedule = Schema.Struct({
+  /** Caller-chosen schedule identity. */
   id: ScheduleId,
+  /** Session that receives each scheduled prompt. */
   sessionId: SessionId,
+  /** Original prompt submitted to the destination Session. */
   prompt: Prompt,
   /** Cron expression and zone for a recurring schedule; null for one-shot. */
   cron: Schema.NullOr(
-    Schema.Struct({ expression: CronExpression, timeZone: TimeZone }),
+    Schema.Struct({
+      /** Cron expression used to calculate occurrences. */
+      expression: CronExpression,
+      /** IANA time zone in which the expression is evaluated. */
+      timeZone: TimeZone,
+    }),
   ),
   /** The occurrence that fires next (or fired last, once finished). */
   nextDueAt: Instant,
+  /** Current scheduling lifecycle state. */
   state: Schema.Literals(["active", "paused", "cancelled", "finished"]),
   /** Latest command admitted for this schedule. */
   lastCommandId: Schema.NullOr(Schema.String),
@@ -54,53 +63,110 @@ export const Schedule = Schema.Struct({
 /** One durable schedule. */
 export type Schedule = Schema.Schema.Type<typeof Schedule>;
 
-const ScheduleRef = Schema.Struct({ scheduleId: ScheduleId });
+const ScheduleRef = Schema.Struct({
+  /** Existing schedule targeted by the command. */
+  scheduleId: ScheduleId,
+});
 
 /** Almanac's contract: agent-scope schedule CRUD, no Session projection. */
 export const almanacContract = {
+  /** Stable extension identity. */
   id: ExtensionId.make("botanical-almanac"),
+  /** Agent-scoped schedule operations. */
   commands: {
+    /** Create a schedule with one due occurrence. */
     createOneShot: {
+      /** The Agent owns the schedule collection. */
       scope: "agent",
+      /** Decode the caller's one-shot schedule request. */
       input: Schema.Struct({
+        /** Caller-chosen schedule identity and create idempotency key. */
         requestId: ScheduleId,
+        /** Session that receives the scheduled prompt. */
         sessionId: SessionId,
+        /** Prompt to submit when due. */
         prompt: Prompt,
+        /** Due time in epoch milliseconds. */
         dueAt: Instant,
       }),
+      /** Return the created durable schedule. */
       output: Schedule,
     },
+    /** Create a recurring cron schedule. */
     createRecurring: {
+      /** The Agent owns the schedule collection. */
       scope: "agent",
+      /** Decode the caller's recurring schedule request. */
       input: Schema.Struct({
+        /** Caller-chosen schedule identity and create idempotency key. */
         requestId: ScheduleId,
+        /** Session that receives each occurrence. */
         sessionId: SessionId,
+        /** Prompt repeated for each occurrence. */
         prompt: Prompt,
+        /** Cron expression used to calculate occurrences. */
         expression: CronExpression,
+        /** IANA time zone used to evaluate the cron expression. */
         timeZone: TimeZone,
       }),
+      /** Return the created durable schedule. */
       output: Schedule,
     },
+    /** Read one schedule, or null when absent. */
     read: {
+      /** Read from the Agent's schedule collection. */
       scope: "agent",
+      /** Identify the schedule to read. */
       input: ScheduleRef,
+      /** Decode the schedule or its absence. */
       output: Schema.NullOr(Schedule),
     },
+    /** Read a bounded page of schedules after an optional identity. */
     list: {
+      /** Read from the Agent's schedule collection. */
       scope: "agent",
+      /** Decode pagination arguments. */
       input: Schema.Struct({
+        /** Exclusive schedule cursor. */
         after: Schema.optionalKey(ScheduleId),
+        /** Maximum number of schedules returned. */
         limit: Schema.optionalKey(
           Schema.Int.pipe(
             Schema.check(Schema.isBetween({ minimum: 1, maximum: 64 })),
           ),
         ),
       }),
+      /** Decode the returned schedule rows. */
       output: Schema.Array(Schedule),
     },
-    pause: { scope: "agent", input: ScheduleRef, output: Schedule },
-    resume: { scope: "agent", input: ScheduleRef, output: Schedule },
-    cancel: { scope: "agent", input: ScheduleRef, output: Schedule },
+    /** Suspend future occurrences of a schedule. */
+    pause: {
+      /** The Agent owns the schedule. */
+      scope: "agent",
+      /** Identify the schedule to pause. */
+      input: ScheduleRef,
+      /** Return its updated state. */
+      output: Schedule,
+    },
+    /** Restore a paused schedule to active scheduling. */
+    resume: {
+      /** The Agent owns the schedule. */
+      scope: "agent",
+      /** Identify the schedule to resume. */
+      input: ScheduleRef,
+      /** Return its updated state. */
+      output: Schedule,
+    },
+    /** Cancel future occurrences of a schedule. */
+    cancel: {
+      /** The Agent owns the schedule. */
+      scope: "agent",
+      /** Identify the schedule to cancel. */
+      input: ScheduleRef,
+      /** Return its updated state. */
+      output: Schedule,
+    },
   },
+  /** Almanac has no Session projection. */
   projection: null,
 } as const;

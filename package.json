@@ -1,6 +1,6 @@
 {
   "name": "@fungi.computer/shiitake-extensions",
-  "version": "0.0.2",
+  "version": "0.1.0",
   "author": "Levi <levi@technomancy.dev>",
   "private": false,
   "description": "Botanical's product Shiitake extensions: goal, loop and Almanac on the generic extension surface",
@@ -45,6 +45,10 @@
     "./roster": {
       "types": "./dist/roster.d.ts",
       "import": "./dist/roster.js"
+    },
+    "./roster/conversation-agents": {
+      "types": "./dist/roster/conversation-agents.d.ts",
+      "import": "./dist/roster/conversation-agents.js"
     },
     "./plan": {
       "types": "./dist/plan/contract.d.ts",
@@ -97,6 +101,7 @@
   },
   "files": [
     "dist",
+    "docs/api",
     "README.md",
     "LICENSE"
   ],
@@ -112,7 +117,8 @@
     "stranger": "tsx ../../tooling/repository/src/artifacts/cli.ts --repo-root ../.. .",
     "smoke": "node test/stranger/runtime.mjs",
     "prepack": "node scripts/prepare-package.mjs",
-    "docs": "node ../../apps/package-docs/scripts/build-sites.mjs --check shiitake-extensions"
+    "docs": "tsx ../../tooling/repository/src/docs/cli.ts check --root ../..",
+    "docs:write": "tsx ../../tooling/repository/src/docs/cli.ts write --root ../.."
   },
   "dependencies": {
     "@fungi.computer/almanac": "workspace:*",
@@ -120,6 +126,7 @@
     "@fungi.computer/knapsack": "workspace:*",
     "@fungi.computer/mycelium": "workspace:*",
     "@fungi.computer/shiitake": "workspace:*",
+    "@fungi.computer/watchdog": "workspace:*",
     "@fungi.computer/whistle": "workspace:*",
     "effect": "4.0.2",
     "papaparse": "5.7.0",
@@ -127,7 +134,7 @@
     "@fungi.computer/gills": "workspace:*"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.99.2",
+    "@earendil-works/pi-ai": "1.3.0",
     "@types/node": "24.13.3",
     "@types/papaparse": "5.5.2",
     "typescript": "5.9.3",

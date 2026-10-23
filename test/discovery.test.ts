@@ -29,6 +29,7 @@ it("finds and describes every Ask, goal, loop and plan operation in a normal run
     model: {
       acquire: () =>
         Effect.succeed({
+          retryable: () => false,
           model: faux.model,
           stream: faux.stream,
           release: Effect.void,

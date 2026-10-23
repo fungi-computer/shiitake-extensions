@@ -1,8 +1,3 @@
-import {
-  appendHistory,
-  emptyHistory,
-  historySchema,
-} from "../internal/history.js";
 import { Mycelium, type ModuleRegistration } from "@fungi.computer/mycelium";
 import {
   type AdmissionError,
@@ -31,16 +26,23 @@ import { ask, catalog, done, freshRequestId } from "../internal/catalog.js";
 import { nextOccurrence } from "../internal/cron.js";
 import { Loop, LoopCommandInput, loopContract } from "./contract.js";
 
+/** The rules the model follows; the describe page and a live loop's prompt share them. */
+const rules =
+  "You may start loops yourself; one live loop per Session. schedule_next is allowed only in the active self-paced loop's own run, clamped to 60–3600 seconds. Omitting it ends that loop. stop works in any Session run. Human pause/resume/stop and Esc remain user controls.";
+
 /** Hashed prose and policy: every constant loop reads comes from here. */
 const config = {
   minDelaySeconds: 60,
   maxDelaySeconds: 3_600,
   fixedLifetimeMs: 7 * 24 * 60 * 60 * 1_000,
   promptLimit: 1_024,
+  idle: "Recurring or scheduled work? forage.describe({path:'loop'}) first.",
   guide:
-    "Session loop tools in execute: loop.get({}), loop.start({prompt,cadence}), loop.schedule_next({delaySeconds,reason}), loop.stop({reason}). You may start loops yourself; one live loop per Session. Find them with forage.search({query:'loop'}) or 'schedule' and forage.describe. schedule_next is allowed only in the active self-paced loop's own run, clamped to 60–3600 seconds. Omitting it ends that loop. stop works in any Session run. Human pause/resume/stop and Esc remain user controls.",
+    "Session loop tools: loop.get, loop.start, loop.schedule_next, loop.stop. " +
+    rules,
   moduleDescription:
-    "Session loop control and schedule tools. Start, get or stop a loop from any Session run; schedule_next requires the self-paced loop's current run.",
+    "Session loop tools: get({}), start({prompt,cadence}), schedule_next({delaySeconds,reason}), stop({reason}). " +
+    rules,
   scheduleDescription:
     "Schedule the original loop prompt after this run settles successfully. delaySeconds is clamped between 60 and 3600. The reason is stored as why now and does not change the loop prompt. Do not call this when the loop should end.",
 } as const;
@@ -63,10 +65,6 @@ const LoopRow = Schema.Struct({
 type LoopRow = Schema.Schema.Type<typeof LoopRow>;
 
 const collections = {
-  history: defineCollection(
-    Schema.Struct({ sessionId: Schema.String, history: historySchema(Loop) }),
-    { key: (row) => row.sessionId },
-  ),
   loops: defineCollection(LoopRow, {
     key: (loop) => loop.sessionId,
     index: (loop) => loop.state,
@@ -102,29 +100,6 @@ function projected(row: LoopRow): Loop {
 
 function commitLoop(ctx: Context, row: LoopRow) {
   return Effect.gen(function* () {
-    const previous = Option.getOrUndefined(
-      yield* ctx.state.loops.get(row.sessionId),
-    );
-    if (
-      previous?.state !== row.state &&
-      (row.state === "active" ||
-        row.state === "finished" ||
-        row.state === "cancelled" ||
-        row.state === "failed")
-    ) {
-      const history =
-        Option.getOrUndefined(yield* ctx.state.history.get(row.sessionId))
-          ?.history ?? emptyHistory<Loop>();
-      yield* ctx.state.history.put({
-        sessionId: row.sessionId,
-        history: appendHistory(
-          history,
-          projected(row),
-          row.commandId || null,
-          yield* Clock.currentTimeMillis,
-        ),
-      });
-    }
     yield* ctx.state.loops.put(row);
   });
 }
@@ -765,6 +740,7 @@ export const loopCatalog = catalog([
   },
 ]);
 
+/** Durable Session loop implementation with prompts, controls and scheduled occurrences. */
 export const loopExtension: RosteredExtensionV0 = defineExtension({
   id: loopContract.id,
   version: "3.0.0",
@@ -777,15 +753,15 @@ export const loopExtension: RosteredExtensionV0 = defineExtension({
         Effect.map((found) => [
           {
             name: "loop",
-            text: (
-              ctx.config.guide +
-              "\n" +
-              (Option.isSome(found)
-                ? loopLine(projected(found.value)) +
+            text: Option.isSome(found)
+              ? (
+                  ctx.config.guide +
+                  "\n" +
+                  loopLine(projected(found.value)) +
                   "; nextDueAt=" +
                   String(found.value.nextDueAt)
-                : "No current loop.")
-            ).slice(0, ctx.config.promptLimit),
+                ).slice(0, ctx.config.promptLimit)
+              : ctx.config.idle,
           },
         ]),
       ),
@@ -794,15 +770,9 @@ export const loopExtension: RosteredExtensionV0 = defineExtension({
       schema: loopContract.projection.schema,
       read: (ctx, sessionId) => {
         const loop = Option.getOrUndefined(ctx.state.loops.peek(sessionId));
-        const history = Option.getOrUndefined(
-          ctx.state.history.peek(sessionId),
-        )?.history;
-        return loop === undefined && history === undefined
+        return loop === undefined
           ? Option.none()
-          : Option.some({
-              loop: loop === undefined ? null : projected(loop),
-              history: history ?? emptyHistory<Loop>(),
-            });
+          : Option.some({ loop: projected(loop) });
       },
     },
     hooks: {

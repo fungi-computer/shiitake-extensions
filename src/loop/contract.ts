@@ -1,4 +1,3 @@
-import { historySchema } from "../internal/history.js";
 import { ExtensionId } from "@fungi.computer/shiitake/extensions";
 import * as Schema from "effect/Schema";
 
@@ -20,10 +19,12 @@ const RequestId = Schema.String.pipe(
 );
 /** A named cron cadence evaluated in one IANA time zone. */
 export const LoopCron = Schema.Struct({
+  /** Cron expression for the fixed cadence. */
   expression: Schema.String.pipe(
     Schema.check(Schema.isMinLength(1)),
     Schema.check(Schema.isMaxLength(256)),
   ),
+  /** IANA time zone in which the expression is evaluated. */
   timeZone: Schema.String.pipe(
     Schema.check(Schema.isMinLength(1)),
     Schema.check(Schema.isMaxLength(128)),
@@ -32,14 +33,19 @@ export const LoopCron = Schema.Struct({
 
 /** One Session's loop as every client sees it. */
 export const Loop = Schema.Struct({
+  /** Identity of the loop whose occurrences are being tracked. */
   loopId: Schema.String,
+  /** Whether a person or the model started this loop. */
   origin: Schema.Literals(["human", "model"]),
+  /** Configured expiry timestamp, or null when absent. */
   expiresAt: Schema.NullOr(Schema.Int),
   /** Original instruction repeated for every occurrence. */
   prompt: Prompt,
+  /** Whether the model or a fixed cron cadence schedules occurrences. */
   mode: Schema.Literals(["self_paced", "fixed_interval"]),
   /** Cadence of a fixed-interval loop; null when the model paces it. */
   cron: Schema.NullOr(LoopCron),
+  /** Current loop lifecycle state. */
   state: Schema.Literals([
     "active",
     "paused",
@@ -60,9 +66,13 @@ export const Loop = Schema.Struct({
 export type Loop = Schema.Schema.Type<typeof Loop>;
 
 const StartResult = Schema.Struct({
+  /** Newly started loop. */
   loop: Loop,
+  /** Admission receipt for the start command. */
   accepted: Schema.Struct({
+    /** Successful admission discriminator. */
     status: Schema.Literal("accepted"),
+    /** Identity of the accepted start command. */
     commandId: Schema.String,
   }),
 });
@@ -74,11 +84,15 @@ const StartResult = Schema.Struct({
  */
 export const LoopCommandInput = Schema.Union([
   Schema.Struct({
+    /** Select the loop-starting control. */
     action: Schema.Literal("start"),
+    /** Human prompt text, optionally prefixed with an interval. */
     text: Prompt,
+    /** Idempotency key for this start command. */
     requestId: RequestId,
   }),
   Schema.Struct({
+    /** Select an existing-loop control or open new-loop entry. */
     action: Schema.Literals(["status", "pause", "resume", "stop", "new"]),
   }),
   Schema.Struct({}),
@@ -86,31 +100,85 @@ export const LoopCommandInput = Schema.Union([
 
 /** Loop's contract: Session-scope controls and one projection slot. */
 export const LoopProjection = Schema.Struct({
-  loop: Schema.NullOr(Loop),
-  history: historySchema(Loop),
+  /** Loop currently visible to Session clients. */
+  loop: Loop,
 });
 
+/** Session-owned loop controls and their visible state. */
 export const loopContract = {
+  /** Stable extension identity. */
   id: ExtensionId.make("botanical-session-loop"),
+  /** Loop operations admitted by the Session owner. */
   commands: {
-    loop: { scope: "session", input: LoopCommandInput, output: CatalogStep },
-    startSelfPaced: {
+    /** Open or answer the human loop controls. */
+    loop: {
+      /** The Session owns this loop. */
       scope: "session",
-      input: Schema.Struct({ prompt: Prompt, requestId: RequestId }),
+      /** Decode the selected human action. */
+      input: LoopCommandInput,
+      /** Return the server-owned conversation step. */
+      output: CatalogStep,
+    },
+    /** Start a loop whose next occurrence is chosen by the model. */
+    startSelfPaced: {
+      /** The Session owns this loop. */
+      scope: "session",
+      /** Decode the repeated prompt and command identity. */
+      input: Schema.Struct({
+        /** Instruction repeated on every occurrence. */
+        prompt: Prompt,
+        /** Idempotency key for the start command. */
+        requestId: RequestId,
+      }),
+      /** Return the loop and admission receipt. */
       output: StartResult,
     },
+    /** Start a loop with a fixed cron cadence. */
     startFixedInterval: {
+      /** The Session owns this loop. */
       scope: "session",
+      /** Decode the prompt, cadence and command identity. */
       input: Schema.Struct({
+        /** Instruction repeated on every occurrence. */
         prompt: Prompt,
+        /** Idempotency key for the start command. */
         requestId: RequestId,
         ...LoopCron.fields,
       }),
+      /** Return the loop and admission receipt. */
       output: StartResult,
     },
-    pause: { scope: "session", input: Schema.Struct({}), output: Loop },
-    resume: { scope: "session", input: Schema.Struct({}), output: Loop },
-    stop: { scope: "session", input: Schema.Struct({}), output: Loop },
+    /** Suspend the current loop. */
+    pause: {
+      /** The Session owns this loop. */
+      scope: "session",
+      /** No additional arguments are required. */
+      input: Schema.Struct({}),
+      /** Return the paused loop. */
+      output: Loop,
+    },
+    /** Resume the current paused loop. */
+    resume: {
+      /** The Session owns this loop. */
+      scope: "session",
+      /** No additional arguments are required. */
+      input: Schema.Struct({}),
+      /** Return the resumed loop. */
+      output: Loop,
+    },
+    /** Stop future occurrences of the current loop. */
+    stop: {
+      /** The Session owns this loop. */
+      scope: "session",
+      /** No additional arguments are required. */
+      input: Schema.Struct({}),
+      /** Return the stopped loop. */
+      output: Loop,
+    },
   },
-  projection: { schema: LoopProjection },
+  /** Current loop visible to Session clients. */
+  projection: {
+    /** Decoder for projected loop state. */
+    schema: LoopProjection,
+  },
 } as const;

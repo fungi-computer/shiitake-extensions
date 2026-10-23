@@ -3,12 +3,15 @@ import { afterEach, expect, it, vi } from "vitest";
 import { clientContributionSchemaV1 } from "@fungi.computer/shiitake/client-entry";
 import loopClient from "../src/loop/client.js";
 import { LoopProjection, type Loop } from "../src/loop/contract.js";
-import { emptyHistory } from "../src/internal/history.js";
 
 const encode = Schema.encodeSync(LoopProjection);
 const admit = Schema.decodeUnknownSync(clientContributionSchemaV1);
 
-function contribution(nextDueAt: number | null, cron: Loop["cron"] = null) {
+function contribution(
+  nextDueAt: number | null,
+  cron: Loop["cron"] = null,
+  reason: Loop["reason"] = null,
+) {
   if (loopClient.contribute === undefined)
     throw new Error("Loop client is missing");
   return admit(
@@ -25,11 +28,10 @@ function contribution(nextDueAt: number | null, cron: Loop["cron"] = null) {
           cron,
           state: "active",
           commandId: "loop-command",
-          reason: null,
+          reason,
           nextDueAt,
           lastError: null,
         },
-        history: emptyHistory<Loop>(),
       }),
       catalog: { protocol: "whistle.catalog/v1", commands: [] },
     }),
@@ -59,7 +61,7 @@ it.each([
     }).format(at);
     const result = contribution(at);
     expect(result.panel[0]?.title).toBe(
-      `Loop · active · self-paced · Next ${displayed}`,
+      `Loop · active · self-paced · Next ${displayed} · Check the kiln`,
     );
     expect(result.waiting).toEqual({
       summary: `Waiting until ${displayed}`,
@@ -83,6 +85,55 @@ it("keeps the cron zone separate from the viewer's display zone", () => {
 
 it("does not invent a due date when no occurrence is scheduled", () => {
   const result = contribution(null);
-  expect(result.panel[0]?.title).toBe("Loop · active · self-paced");
+  expect(result.panel[0]?.title).toBe(
+    "Loop · active · self-paced · Check the kiln",
+  );
   expect(result.waiting).toBeNull();
+});
+
+it("keeps events out of the timeline and shows the reason in the one footer row", () => {
+  const result = contribution(null);
+  expect(result.timeline).toEqual({ cells: [], omitted: 0 });
+  expect(result.panel).toHaveLength(1);
+});
+
+it("shows the model's reason in the footer row detail, else the prompt", () => {
+  expect(
+    contribution(null, null, "Kiln is still cooling").panel[0]?.detail,
+  ).toBe("Kiln is still cooling\nCheck the kiln");
+  expect(contribution(null).panel[0]?.detail).toBe("Check the kiln");
+});
+
+it("keeps the footer title to one short line for a long prompt", () => {
+  const long = "Check the kiln ".repeat(20);
+  const result = admit(
+    (
+      loopClient.contribute ??
+      (() => {
+        throw new Error("missing");
+      })
+    )({
+      status: "running",
+      revision: "sha256:loop-long",
+      value: encode({
+        loop: {
+          loopId: "loop-long",
+          origin: "human",
+          expiresAt: null,
+          prompt: long,
+          mode: "self_paced",
+          cron: null,
+          state: "active",
+          commandId: "c",
+          reason: null,
+          nextDueAt: null,
+          lastError: null,
+        },
+      }),
+      catalog: { protocol: "whistle.catalog/v1", commands: [] },
+    }),
+  );
+  expect(result.panel[0]?.title.endsWith("…")).toBe(true);
+  expect(result.panel[0]?.title.length).toBeLessThan(100);
+  expect(result.panel[0]?.detail).toBe(long.slice(0, 1024));
 });

@@ -61,6 +61,7 @@ it("replaces the Session plan through its run tool and projects the latest check
     model: {
       acquire: () =>
         Effect.succeed({
+          retryable: () => false,
           model: faux.model,
           stream: faux.stream,
           release: Effect.void,
@@ -185,6 +186,7 @@ it("lets the Agent and the human clear a plan through one owner, keeping its his
     model: {
       acquire: () =>
         Effect.succeed({
+          retryable: () => false,
           model: faux.model,
           stream: faux.stream,
           release: Effect.void,

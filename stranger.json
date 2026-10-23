@@ -44,6 +44,8 @@
     "package/dist/question/host.js",
     "package/dist/roster.d.ts",
     "package/dist/roster.js",
+    "package/dist/roster/conversation-agents.d.ts",
+    "package/dist/roster/conversation-agents.js",
     "package/dist/skills/host.d.ts",
     "package/dist/skills/host.js",
     "package/dist/skills/source.d.ts",
@@ -54,6 +56,30 @@
     "package/dist/subagents/contract.js",
     "package/dist/subagents/host.d.ts",
     "package/dist/subagents/host.js",
+    "package/docs/api/README.md",
+    "package/docs/api/almanac/contract.md",
+    "package/docs/api/almanac/host.md",
+    "package/docs/api/goal/client.md",
+    "package/docs/api/goal/contract.md",
+    "package/docs/api/goal/host.md",
+    "package/docs/api/home/contract.md",
+    "package/docs/api/home/host.md",
+    "package/docs/api/loop/client.md",
+    "package/docs/api/loop/contract.md",
+    "package/docs/api/loop/host.md",
+    "package/docs/api/plan/client.md",
+    "package/docs/api/plan/contract.md",
+    "package/docs/api/plan/host.md",
+    "package/docs/api/question/client.md",
+    "package/docs/api/question/contract.md",
+    "package/docs/api/question/host.md",
+    "package/docs/api/roster.md",
+    "package/docs/api/roster/conversation-agents.md",
+    "package/docs/api/skills/host.md",
+    "package/docs/api/skills/source.md",
+    "package/docs/api/subagents/client.md",
+    "package/docs/api/subagents/contract.md",
+    "package/docs/api/subagents/host.md",
     "package/package.json"
   ],
   "localDependencies": [
@@ -62,11 +88,16 @@
     "../knapsack",
     "../mycelium",
     "../shiitake",
+    "../watchdog",
     "../whistle",
     "../gills"
   ],
   "runtimeFixture": "test/stranger/runtime.mjs",
-  "typecheckFixture": "test/stranger/consumer.mts",
+  "typechecks": [
+    {
+      "fixture": "test/stranger/consumer.mts"
+    }
+  ],
   "consumerDevDependencies": {
     "@types/node": "24.13.3",
     "@types/react": "18.3.3",

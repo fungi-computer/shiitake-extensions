@@ -31,8 +31,11 @@ import {
 const config = {
   maximumOpen: 4,
   liveWindowMs: 600_000,
+  idle: "Need a person's decision? forage.describe({path:'question'}) first.",
   guide:
-    "Use question.ask for decisions that need a person's answer. Put the recommended option first; do not add Other, since free text is always available. Use credential tools for secrets. While a question is parked, finish independent work and end the turn.",
+    "Question tools: ask, withdraw. Use question.ask for decisions that need a person's answer. Put the recommended option first; do not add Other, since free text is always available. Use credential tools for secrets. While a question is parked, finish independent work and end the turn.",
+  askDescription:
+    "Ask a person one or more questions and wait for the answer; options follow the question module rules.",
 };
 const Response = Schema.Union([
   Schema.Struct({ status: Schema.Literal("answered"), answers: Answers }),
@@ -860,32 +863,6 @@ function singleSelection(
     : Effect.succeed([option.label]);
 }
 
-function promptSelection(
-  question: AskRow["questions"][number],
-  next: FlowDraft,
-  input: Extract<FlowInput, { stage: "selection" | "multiple" }>,
-) {
-  const selected =
-    input.stage === "multiple"
-      ? multipleSelection(question, input.selection)
-      : singleSelection(question, input.selection);
-  return selected.pipe(
-    Effect.map((labels) =>
-      ask(
-        {
-          type: "text",
-          message:
-            labels.length === 0
-              ? `Your answer for ${question.header}:`
-              : `Additional context for ${question.header} (leave blank to skip):`,
-        },
-        { stage: "text", ...next, selected: labels },
-        "text",
-      ),
-    ),
-  );
-}
-
 function promptQuestion(
   nextQuestion: AskRow["questions"][number],
   next: FlowDraft,
@@ -970,11 +947,40 @@ function answerQuestion(
           message: "Unknown question step",
         }),
       );
-    if (draft.stage === "text") {
-      const answer =
+    let answer: AnswerInput["answers"][string] | undefined;
+    if (draft.stage === "text")
+      answer =
         draft.text.length === 0
           ? { selected: draft.selected }
           : { selected: draft.selected, text: draft.text };
+    else if (draft.stage === "selection" || draft.stage === "multiple") {
+      const selected = yield* draft.stage === "multiple"
+        ? multipleSelection(question, draft.selection)
+        : singleSelection(question, draft.selection);
+      // A single choice is complete; only multiple selection and free text
+      // need an explicit submit.
+      if (draft.stage === "multiple" || selected.length === 0)
+        return ask(
+          {
+            type: "text",
+            message:
+              selected.length === 0
+                ? `Your answer for ${question.header}:`
+                : `Additional context for ${question.header} (leave blank to skip):`,
+          },
+          {
+            stage: "text",
+            askId: row.askId,
+            requestId,
+            index,
+            answers,
+            selected,
+          },
+          "text",
+        );
+      answer = { selected };
+    }
+    if (answer !== undefined) {
       answers = { ...answers, [question.id]: answer };
       index += 1;
       if (index === row.questions.length) {
@@ -993,8 +999,6 @@ function answerQuestion(
         message: "That question is already closed.",
       });
     const next = { askId: row.askId, requestId, index, answers };
-    if (draft.stage === "selection" || draft.stage === "multiple")
-      return yield* promptSelection(question, next, draft);
     const nextQuestion = row.questions[index];
     if (nextQuestion === undefined)
       throw new Error("Expected the next question");
@@ -1092,7 +1096,7 @@ export const questionExtension: RosteredExtensionV0 = defineExtension({
             yield* expireAsk(ctx, row.value, timer.firedAt);
         }),
     },
-    prompt: (ctx) => [{ name: "question", text: ctx.config.guide }],
+    prompt: (ctx) => [{ name: "question", text: ctx.config.idle }],
     projection: {
       schema: questionContract.projection.schema,
       catalog: (value) => answerCatalog(value.asks.length > 0),
@@ -1144,7 +1148,7 @@ export const questionExtension: RosteredExtensionV0 = defineExtension({
           }),
           ask: Mycelium.operation({
             replay: "unsafe",
-            description: ctx.config.guide,
+            description: ctx.config.askDescription,
             input,
             output: ToolResult,
             execute: async (value, invocation) => {

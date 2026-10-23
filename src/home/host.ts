@@ -16,8 +16,11 @@ import { homeFilesRouting } from "./routing.js";
 
 /** Already-scoped authority supplied by the host, never constructed by Home. */
 export type HomeComputer = Readonly<{
+  /** Attachment name offered to the person choosing Home. */
   name: string;
+  /** Stable identity stored by the Home selection. */
   attachmentId: string;
+  /** Already-scoped Files authority captured for this attachment. */
   port: FilesPort;
 }>;
 
@@ -30,7 +33,7 @@ export const homeGrant: ExtensionGrantV0 = {
 const config = {
   promptLimit: 4_000,
   guide:
-    "Home supplies read, list, glob and grep over your default Computer. Bare paths and computer://home/ use Home; computer://<name>/ uses that captured attachment. apply_patch, when offered, uses Home's native patch engine and path jail. Only a person changes Home with /home <name>; ask them when no Home is available.",
+    "Home supplies read, list, glob and grep over your default Computer. Bare paths and computer://home/ use Home; computer://<name>/ uses that captured attachment. apply_patch, when offered, also works on Home. Only a person changes Home with /home <name>; ask them when no Home is available.",
 };
 const collections = {
   choice: defineCollection(Home, { key: () => "default" }),
@@ -105,8 +108,6 @@ export function homeExtension(options: {
             new Map(computers.map(({ name, port }) => [name, port])),
             selected.port,
           ),
-          pathInstructions:
-            "Bare paths and computer://home/ select Home. computer://<name>/ selects another captured attachment. apply_patch uses Home only.",
         }).tools;
       },
       prompt: (_ctx, run) => [

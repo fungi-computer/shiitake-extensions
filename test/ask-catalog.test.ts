@@ -33,6 +33,7 @@ async function answerThroughCatalog(
   const prompts: WhistlePrompt[] = [];
   const notices: string[] = [];
   const interaction: WhistleInteraction = {
+    run: (operation) => operation(),
     signal: new AbortController().signal,
     prompt: (prompt) => {
       prompts.push(prompt);
@@ -72,7 +73,6 @@ it("answers a parked question through the advertised /answer conversation", asyn
     expect(await answerAvailability()).toEqual({ status: "available" });
     const { prompts, notices } = await answerThroughCatalog(fixture, [
       "option:SQLite",
-      "Keep the notes local.",
     ]);
     expect(prompts).toMatchObject([
       {
@@ -84,14 +84,13 @@ it("answers a parked question through the advertised /answer conversation", asyn
           { value: "free_text" },
         ],
       },
-      { type: "text" },
     ]);
     expect(notices).toEqual(["Answer sent."]);
     const after = await session.read();
     expect(after.attention).toEqual([]);
     expect(await answerAvailability()).toMatchObject({ status: "unavailable" });
     expect(after.pending.prompts).toHaveLength(1);
-    expect(after.pending.prompts[0]?.text).toContain("Keep the notes local.");
+    expect(after.pending.prompts[0]?.text).toContain("Selected: SQLite");
     expect(
       await session.extension("botanical-session-question").call("answer", {
         askId,
@@ -144,6 +143,45 @@ it("collects quoted multiple selections and free text across every question", as
     expect(text).toContain("Selected: Docs, examples, Tests");
     expect(text).toContain("Ship together.");
     expect(text).toContain("Use a local file for now.");
+  } finally {
+    await fixture.host.close();
+    fixture.store.close();
+  }
+});
+
+it("advances earlier single choices and submits the last question immediately", async () => {
+  const fixture = await questionHost({
+    mode: "continue",
+    questions: [
+      ...questions,
+      {
+        id: "scope",
+        header: "Scope",
+        question: "Which scope?",
+        options: [
+          { label: "Local", description: "This computer." },
+          { label: "Team", description: "Everyone." },
+        ],
+      },
+    ],
+  });
+  try {
+    await fixture.park();
+    const { prompts, notices } = await answerThroughCatalog(fixture, [
+      "option:SQLite",
+      "option:Local",
+    ]);
+    expect(prompts.map((prompt) => prompt.message)).toEqual([
+      "Which store should hold the notes?",
+      "Which scope?",
+    ]);
+    expect(prompts.map((prompt) => prompt.type)).toEqual(["choice", "choice"]);
+    expect(notices).toEqual(["Answer sent."]);
+    const snapshot = await fixture.host.session("questions").read();
+    expect(snapshot.attention).toEqual([]);
+    expect(snapshot.pending.prompts).toHaveLength(1);
+    expect(snapshot.pending.prompts[0]?.text).toContain("Selected: SQLite");
+    expect(snapshot.pending.prompts[0]?.text).toContain("Selected: Local");
   } finally {
     await fixture.host.close();
     fixture.store.close();

@@ -32,6 +32,7 @@ function scriptedModel(
   return {
     acquire: () =>
       Effect.succeed({
+        retryable: () => false,
         model: faux.model,
         stream: faux.stream,
         release: Effect.void,
@@ -139,78 +140,17 @@ it("paces a self-paced loop by the model's clamped request and ends when it stop
     expect(await host.view()).toMatchObject({
       value: {
         loop: { state: "finished", nextDueAt: null },
-        history: {
-          nextSequence: 3,
-          omitted: 0,
-          events: [
-            { id: "1", sequence: 1, event: { state: "active" } },
-            {
-              id: "2",
-              sequence: 2,
-              event: { state: "finished" },
-            },
-          ],
-        },
       },
     });
     const committed = await host.view();
     if (committed.status !== "running" || committed.value === null)
       throw new Error("Finished Loop projection unavailable");
-    const workIds = new Set(
-      (await host.session("kiln").read()).messages.map(
-        ({ commandId }) => commandId,
-      ),
-    );
-    expect(
-      committed.value.history.events
-        .filter(({ event }) => event.state === "finished")
-        .every(({ commandId }) => commandId !== null && workIds.has(commandId)),
-    ).toBe(true);
     await host.drain();
     expect(await host.view()).toEqual(committed);
     expect(await host.pendingWork()).toEqual({
       pending: false,
       nextWakeAt: null,
     });
-  } finally {
-    await host.dispose();
-  }
-});
-
-it("retains the last 32 real loop transitions and their counter across reopening", async () => {
-  const host = await openLoop();
-  try {
-    for (let index = 0; index < 18; index++) {
-      await host.loop.call("startSelfPaced", {
-        prompt: "Check the kiln",
-        requestId: `retention-${String(index)}`,
-      });
-      await host.loop.call("stop", {});
-    }
-    const committed = await host.view();
-    if (committed.status !== "running" || committed.value === null)
-      throw new Error("Loop projection unavailable");
-    expect(committed.value.history).toMatchObject({
-      nextSequence: 37,
-      omitted: 4,
-    });
-    expect(committed.value.history.events).toHaveLength(32);
-    expect(committed.value.history.events[0]).toMatchObject({
-      id: "5",
-      sequence: 5,
-    });
-    expect(committed.value.history.events.at(-1)).toMatchObject({
-      id: "36",
-      sequence: 36,
-      event: { state: "cancelled" },
-    });
-    await host.close();
-    const reopened = await openLoop({}, grantAll([loopExtension]), host.store);
-    try {
-      expect(await reopened.view()).toEqual(committed);
-    } finally {
-      await reopened.close();
-    }
   } finally {
     await host.dispose();
   }
@@ -521,7 +461,7 @@ it("fails a due loop occurrence without recreating its deleted Session", async (
       },
     });
     if (failed.status !== "running") throw new Error("Loop extension stopped");
-    expect(failed.value?.loop?.lastError).toContain("unavailable");
+    expect(failed.value?.loop.lastError).toContain("unavailable");
     expect(await host.pendingWork()).toEqual({
       pending: false,
       nextWakeAt: null,

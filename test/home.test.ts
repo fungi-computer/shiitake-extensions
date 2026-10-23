@@ -19,6 +19,17 @@ import { homeFilesRouting } from "../src/home/routing.js";
 import { openAgent, sqliteOwner } from "./fixtures/host.js";
 
 function computer(name: string, calls: string[], patch = false): HomeComputer {
+  function paths(
+    operation: "list" | "glob",
+    path: string,
+  ): ReturnType<FilesPort["list"]> {
+    calls.push(`${name}:${operation}:${path}`);
+    return Promise.resolve({
+      path,
+      results: [{ path: `${path}/x y`, type: "file" }],
+      truncated: null,
+    });
+  }
   const port: FilesPort = {
     read: (input) => {
       calls.push(`${name}:read:${input.path}`);
@@ -34,36 +45,14 @@ function computer(name: string, calls: string[], patch = false): HomeComputer {
         },
       });
     },
-    list: ({ path }) => {
-      calls.push(`${name}:list:${path}`);
-      return Promise.resolve({
-        path,
-        entries: [
-          {
-            path: `${path}/x y`,
-            name: "x y",
-            type: "file",
-            size: 1,
-            modifiedAt: 1,
-          },
-        ],
-        truncated: false,
-      });
-    },
-    glob: ({ path }) => {
-      calls.push(`${name}:glob:${path}`);
-      return Promise.resolve({
-        path,
-        matches: [`${path}/x y`],
-        truncated: false,
-      });
-    },
+    list: ({ path }) => paths("list", path),
+    glob: ({ path }) => paths("glob", path),
     grep: ({ path }) => {
       calls.push(`${name}:grep:${path}`);
       return Promise.resolve({
         path,
-        matches: [{ path: `${path}/x y`, line: 1, text: name }],
-        truncated: false,
+        results: [{ path: `${path}/x y`, line: 1, text: name }],
+        truncated: null,
       });
     },
     replace: ({ path }) => {
@@ -96,6 +85,7 @@ async function fixture(initial: readonly HomeComputer[], allowed = true) {
   let sequence = 0;
   const prompts: string[] = [];
   const tools: string[][] = [];
+  const descriptions: string[] = [];
   const member = homeExtension({
     computers: {
       read: () => {
@@ -111,6 +101,7 @@ async function fixture(initial: readonly HomeComputer[], allowed = true) {
       model: {
         acquire: () =>
           Effect.succeed({
+            retryable: () => false,
             model: faux.model,
             stream: (model, context, options) => {
               const system = context.messages[0];
@@ -118,6 +109,11 @@ async function fixture(initial: readonly HomeComputer[], allowed = true) {
                 throw new Error("Missing system prompt");
               prompts.push(getSystemMessageText(system));
               tools.push(system.toolsAdded?.map(({ name }) => name) ?? []);
+              descriptions.push(
+                ...(system.toolsAdded ?? []).map(
+                  ({ description }) => description,
+                ),
+              );
               return faux.stream(model, context, options);
             },
             release: Effect.void,
@@ -137,6 +133,7 @@ async function fixture(initial: readonly HomeComputer[], allowed = true) {
     faux,
     prompts,
     tools,
+    descriptions,
     captures: () => captures,
     attach: (next: readonly HomeComputer[]) => {
       computers = next;
@@ -312,6 +309,20 @@ it("captures ports and prompt once despite a human changing Home during a run", 
   }
 });
 
+it("does not repeat the Home path sentence in each Files tool description", async () => {
+  const test = await fixture([computer("a", [], true)]);
+  try {
+    await test.run();
+    expect(test.prompts.at(-1)).toContain("Bare paths and computer://home/");
+    expect(test.descriptions.length).toBeGreaterThan(0);
+    for (const description of test.descriptions) {
+      expect(description).not.toContain("computer://");
+    }
+  } finally {
+    await test.close();
+  }
+});
+
 it("gates every direct call before touching its selected port", async () => {
   const calls: string[] = [];
   const test = await fixture([computer("a", calls, true)], false);
@@ -458,19 +469,29 @@ it("keeps named locators and the scoped port's file identity across every Files 
     file: { computerId: "cmp_b", path: "/x y" },
   });
   await expect(
-    files.list({ path: "computer://b/folder", limit: 20 }, context),
-  ).resolves.toMatchObject({
-    path: "computer://b/folder",
-    entries: [{ path: "computer://b/folder/x%20y", name: "x y" }],
-  });
-  await expect(
-    files.glob(
-      { path: "computer://b/folder", pattern: "*", limit: 20 },
+    files.list(
+      {
+        path: "computer://b/folder",
+        limit: 20,
+      },
       context,
     ),
   ).resolves.toMatchObject({
     path: "computer://b/folder",
-    matches: ["computer://b/folder/x%20y"],
+    results: [{ path: "computer://b/folder/x%20y" }],
+  });
+  await expect(
+    files.glob(
+      {
+        path: "computer://b/folder",
+        pattern: "*",
+        limit: 20,
+      },
+      context,
+    ),
+  ).resolves.toMatchObject({
+    path: "computer://b/folder",
+    results: [{ path: "computer://b/folder/x%20y" }],
   });
   await expect(
     files.grep(
@@ -485,7 +506,7 @@ it("keeps named locators and the scoped port's file identity across every Files 
     ),
   ).resolves.toMatchObject({
     path: "computer://b/folder",
-    matches: [{ path: "computer://b/folder/x%20y", line: 1, text: "b" }],
+    results: [{ path: "computer://b/folder/x%20y", line: 1, text: "b" }],
   });
   await expect(
     files.replace(
@@ -542,29 +563,14 @@ it("round-trips root-relative URI results through the same port", async () => {
     await files.read({ path, offset: 0, limit: 20 }, context);
   }
   expect(calls).toEqual(Array(3).fill("local:read:src/x y"));
-  const listed = await files.list(
-    { path: "computer://home/src", limit: 20 },
-    context,
-  );
-  const matched = await files.glob(
-    { path: "computer://home/src", pattern: "*", limit: 20 },
-    context,
-  );
-  const searched = await files.grep(
+  const found = await files.list(
     {
       path: "computer://home/src",
-      pattern: "local",
-      regex: false,
-      ignoreCase: false,
       limit: 20,
     },
     context,
   );
-  for (const path of [
-    ...listed.entries.map((entry) => entry.path),
-    ...matched.matches,
-    ...searched.matches.map((match) => match.path),
-  ]) {
+  for (const path of found.results.map((result) => result.path)) {
     await files.read({ path, offset: 0, limit: 20 }, context);
     expect(calls.at(-1)).toBe("local:read:src/x y");
   }

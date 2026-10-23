@@ -150,6 +150,7 @@ export async function openAgent(
             const faux = fauxModel([]);
             faux.setResponses([fauxAssistantMessage("done")]);
             return {
+              retryable: () => false,
               model: faux.model,
               stream: faux.stream,
               release: Effect.void,

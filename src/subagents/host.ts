@@ -10,6 +10,8 @@ import {
 } from "@fungi.computer/shiitake/extensions";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import { catalog, done } from "../internal/catalog.js";
+import type { WhistleCatalogStepV1 } from "@fungi.computer/whistle/catalog";
 import {
   maximumSubagents,
   subagentsContract,
@@ -17,36 +19,54 @@ import {
   type SubagentsProjection,
 } from "./contract.js";
 
-/** One Agent the host recorded this Session sending work to or creating. */
+/** A footer row for an ordinary Agent created by the current Agent. */
 export type SubagentRecord = Readonly<{
+  /** Identity of the ordinary created Agent. */
   agentId: string;
+  /** Display name supplied by the host. */
   name: string;
-  /** The conversation it last addressed; null when it was only created. */
+  /** A host-selected conversation; null asks the view to read its latest one. */
   sessionId: string | null;
 }>;
 
 /** The two owner reads a status needs from one child Agent. */
 export type SubagentAgent = Readonly<{
+  /** Read the child's owner-ordered conversation summaries. */
   listSessions: ShiitakeAgent["listSessions"];
+  /** Open the read-only view of a selected child conversation. */
   session: (sessionId: string) => Pick<ShiitakeSession, "read">;
 }>;
 
 /**
- * The host's read-only facts. `read` returns this Session's sub-agents,
- * newest first and at most `limit`, with a count of the rest; `open` is the
+ * The host's read-only facts. `read` returns ordinary created Agents,
+ * at most `limit`, with a count of the rest; `open` is the
  * host's existing per-operation Agent access (an `AgentControlDirectory`'s
  * `open` fits), and releasing it never stops the Agent's work.
  */
 export type SubagentSource = Readonly<{
+  /** Read a bounded list of this conversation's created Agents. */
   read: (
     sessionId: string,
     limit: number,
-  ) => Promise<Readonly<{ agents: readonly SubagentRecord[]; more: number }>>;
+  ) => Promise<
+    Readonly<{
+      /** Created Agents included in this page. */
+      agents: readonly SubagentRecord[];
+      /** Additional created Agents not included in this page. */
+      more: number;
+    }>
+  >;
+  /** Acquire existing owner access for one child Agent. */
   open: (
     agentId: string,
     signal: AbortSignal,
   ) => Promise<
-    Readonly<{ agent: SubagentAgent; release: () => Promise<void> }>
+    Readonly<{
+      /** Read-only Agent access held by this acquisition. */
+      agent: SubagentAgent;
+      /** Release this acquisition without stopping the Agent's work. */
+      release: () => Promise<void>;
+    }>
   >;
 }>;
 
@@ -70,9 +90,10 @@ const cachedSessions = 64;
 /** Owner pages scanned for one child's row: 400 conversations. */
 const statusPages = 2;
 
+/** Host admission for the read-only created-Agent footer and human toggle. */
 export const subagentsGrant: ExtensionGrantV0 = {
   id: subagentsContract.id,
-  capabilities: ["projection"],
+  capabilities: ["projection", "commands"],
 };
 
 const settledState = {
@@ -106,7 +127,7 @@ async function status(
   record: SubagentRecord,
   signal: AbortSignal,
 ): Promise<Subagent> {
-  const base = {
+  const base: Omit<Subagent, "state"> = {
     agentId: record.agentId,
     name: record.name,
     sessionId: record.sessionId,
@@ -114,19 +135,24 @@ async function status(
   try {
     const opened = await source.open(record.agentId, signal);
     try {
-      if (record.sessionId === null) return { ...base, state: "idle" };
-      const row = await findSession(opened.agent, record.sessionId);
+      const row =
+        record.sessionId === null
+          ? (await opened.agent.listSessions()).sessions[0]
+          : await findSession(opened.agent, record.sessionId);
+      if (row === undefined && record.sessionId === null)
+        return { ...base, state: "idle" };
       if (row === undefined || row.state === "unavailable")
         return { ...base, state: "unavailable" };
+      const selected = { ...base, sessionId: row.sessionId };
       if (row.state !== "needs_you")
-        return { ...base, state: settledState[row.state] };
+        return { ...selected, state: settledState[row.state] };
       const snapshot = await opened.agent
-        .session(record.sessionId)
+        .session(row.sessionId)
         .read({ limit: 1 });
       const attention = snapshot.attention[0]?.summary;
       return attention === undefined
-        ? { ...base, state: "waiting" }
-        : { ...base, state: "waiting", attention };
+        ? { ...selected, state: "waiting" }
+        : { ...selected, state: "waiting", attention };
     } finally {
       await opened.release();
     }
@@ -137,15 +163,20 @@ async function status(
   }
 }
 
+/** The rows a refresh reads; whether they are listed is the person's choice. */
+type Rows = Omit<SubagentsProjection, "expanded">;
+
 type Entry = {
-  value: SubagentsProjection | undefined;
+  value: Rows | undefined;
+  /** Collapsed initially; `/agents` toggles whether the footer lists rows. */
+  expanded: boolean;
   refreshedAt: number;
   readAt: number;
   refreshing: boolean;
   timer: ReturnType<typeof setTimeout> | undefined;
 };
 
-const live = (value: SubagentsProjection | undefined) =>
+const live = (value: Rows | undefined) =>
   value?.agents.some(
     (agent) => agent.state === "working" || agent.state === "waiting",
   ) === true;
@@ -174,7 +205,7 @@ function createRoster(
     entry.timer = undefined;
     try {
       const page = await source.read(sessionId, maximumSubagents - 1);
-      const value: SubagentsProjection = {
+      const value: Rows = {
         agents: await Promise.all(
           page.agents
             .slice(0, maximumSubagents - 1)
@@ -204,12 +235,21 @@ function createRoster(
   }
 
   return {
+    /** Flip whether the footer lists the rows; undefined while there is nothing to list. */
+    toggle(sessionId: string): boolean | undefined {
+      const entry = entries.get(sessionId);
+      if (entry?.value === undefined || entry.value.agents.length === 0)
+        return undefined;
+      entry.expanded = !entry.expanded;
+      return entry.expanded;
+    },
     read(sessionId: string): SubagentsProjection | undefined {
       const now = Date.now();
       let entry = entries.get(sessionId);
       if (entry === undefined) {
         entry = {
           value: undefined,
+          expanded: false,
           refreshedAt: Number.NEGATIVE_INFINITY,
           readAt: now,
           refreshing: false,
@@ -226,7 +266,9 @@ function createRoster(
       entry.readAt = now;
       if (!entry.refreshing && now - entry.refreshedAt >= timing.refreshMs)
         void refresh(sessionId, entry);
-      return entry.value;
+      return entry.value === undefined
+        ? undefined
+        : { ...entry.value, expanded: entry.expanded };
     },
     close() {
       lifetime.abort();
@@ -236,10 +278,11 @@ function createRoster(
 }
 
 /**
- * The read-only sub-agent view: the Agents this conversation sent work to or
- * created, one row each, with their live status. It owns no relationship,
- * no durable state and no command; the collaboration App remains the only
- * relationship owner.
+ * The read-only footer: ordinary Agents created by this Agent, one row each,
+ * with their live status. It owns neither relationships nor durable state;
+ * the Agent directory owns immutable creation attribution.
+ * Its one command, `/agents`, only expands or collapses
+ * the footer rows.
  */
 export function subagentsExtension(
   options: Readonly<{ source: SubagentSource; timing?: SubagentTiming }>,
@@ -270,10 +313,40 @@ export function subagentsExtension(
               }),
           ).pipe(Effect.asVoid),
       },
+      catalog: catalog([
+        {
+          id: "agents",
+          title: "Agents",
+          category: "Conversation",
+          description: "Show or hide this conversation's sub-agents",
+          projections: {
+            help: { order: 6 },
+            palette: { order: 6 },
+            slash: { aliases: ["agents"], order: 6 },
+          },
+        },
+      ]),
       projection: {
         schema: subagentsContract.projection.schema,
         read: (ctx, sessionId) =>
           Option.fromUndefinedOr(rosters.get(ctx)?.read(sessionId)),
+      },
+      commands: {
+        specs: subagentsContract.commands,
+        handlers: (ctx) => ({
+          agents: ({ sessionId }) =>
+            Effect.gen(function* () {
+              const expanded = rosters.get(ctx)?.toggle(sessionId);
+              if (expanded === undefined)
+                return done({
+                  type: "info",
+                  message: "This conversation has no sub-agents.",
+                });
+              yield* ctx.observe(sessionId);
+              // The changed rows already show the result; don't echo the toggle.
+              return { type: "done" } satisfies WhistleCatalogStepV1;
+            }),
+        }),
       },
     });
 }

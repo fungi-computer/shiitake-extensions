@@ -56,6 +56,7 @@ export async function questionHost(
     model: {
       acquire: () =>
         Effect.succeed({
+          retryable: () => false,
           model: faux.model,
           stream: faux.stream,
           release: Effect.void,

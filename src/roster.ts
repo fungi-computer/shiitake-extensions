@@ -50,6 +50,7 @@ export const botanicalAgentExtensions: ExtensionRosterV0 = Object.freeze({
         "projection",
         "run_tools",
         "prompt",
+        "attention",
       ],
     },
     {

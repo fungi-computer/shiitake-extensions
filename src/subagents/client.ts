@@ -5,6 +5,7 @@ import {
 import {
   subagentsContract,
   type Subagent,
+  type SubagentsProjection,
   type SubagentState,
 } from "./contract.js";
 
@@ -49,6 +50,38 @@ function row(agent: Subagent): PanelRow {
       };
 }
 
+/**
+ * One summary row while the footer is collapsed: how
+ * many sub-agents there are and what needs attention, so a collapse never
+ * hides an Agent waiting on them.
+ */
+function summary(view: SubagentsProjection): PanelRow {
+  const count = (state: SubagentState) =>
+    view.agents.filter((agent) => agent.state === state).length;
+  const counts = (["working", "waiting", "failed", "unavailable"] as const)
+    .map((state) => [state, count(state)] as const)
+    .filter(([, n]) => n > 0)
+    .map(([state, n]) => `${String(n)} ${presentation[state].label}`);
+  const total = view.agents.length + view.more;
+  const tone: PanelRow["tone"] =
+    count("waiting") > 0
+      ? "attention"
+      : count("failed") > 0
+        ? "error"
+        : count("working") > 0
+          ? "running"
+          : "muted";
+  return {
+    id: "summary",
+    title: [
+      `${String(total)} sub-agent${total === 1 ? "" : "s"}`,
+      ...counts,
+      "/agents shows them",
+    ].join(" · "),
+    tone,
+  };
+}
+
 /** One footer row per sub-agent; opening a row shows its conversation beside this one. */
 export default defineClientEntry(subagentsContract, {
   contribute: (view): ClientContributionV1 => ({
@@ -56,18 +89,20 @@ export default defineClientEntry(subagentsContract, {
     panel:
       view.status !== "running" || view.value === null
         ? []
-        : [
-            ...view.value.agents.map(row),
-            ...(view.value.more === 0
-              ? []
-              : [
-                  {
-                    id: "more",
-                    title: `${String(view.value.more)} more sub-agent${view.value.more === 1 ? "" : "s"}`,
-                    tone: "muted" as const,
-                  },
-                ]),
-          ],
+        : view.value.agents.length > 0 && !view.value.expanded
+          ? [summary(view.value)]
+          : [
+              ...view.value.agents.map(row),
+              ...(view.value.more === 0
+                ? []
+                : [
+                    {
+                      id: "more",
+                      title: `${String(view.value.more)} more sub-agent${view.value.more === 1 ? "" : "s"}`,
+                      tone: "muted" as const,
+                    },
+                  ]),
+            ],
     timeline: { cells: [], omitted: 0 },
     waiting: null,
   }),

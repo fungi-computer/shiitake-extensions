@@ -3,14 +3,22 @@ import * as Schema from "effect/Schema";
 /** Producer state: committed event identity survives reconnection and trimming. */
 export function historySchema<E, EI>(event: Schema.Codec<E, EI>) {
   return Schema.Struct({
+    /** Sequence to assign to the next committed event. */
     nextSequence: Schema.Int.check(Schema.isGreaterThan(0)),
+    /** Number of older events removed by retention. */
     omitted: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    /** Retained committed events in sequence order. */
     events: Schema.Array(
       Schema.Struct({
+        /** Stable event identity within this producer's history. */
         id: Schema.String,
+        /** Producer-assigned event order. */
         sequence: Schema.Int,
+        /** Event timestamp supplied by the owner. */
         at: Schema.Int,
+        /** Associated accepted command, or null when none applies. */
         commandId: Schema.NullOr(Schema.String),
+        /** Extension-specific event payload. */
         event,
       }),
     ),
@@ -18,13 +26,21 @@ export function historySchema<E, EI>(event: Schema.Codec<E, EI>) {
 }
 /** The extension's own persisted history, not a core cursor. */
 export type History<E> = Readonly<{
+  /** Sequence to assign to the next committed event. */
   nextSequence: number;
+  /** Number of older events removed by retention. */
   omitted: number;
+  /** Retained committed events in sequence order. */
   events: readonly Readonly<{
+    /** Stable event identity within this producer's history. */
     id: string;
+    /** Producer-assigned event order. */
     sequence: number;
+    /** Event timestamp supplied by the owner. */
     at: number;
+    /** Associated accepted command, or null when none applies. */
     commandId: string | null;
+    /** Extension-specific event payload. */
     event: E;
   }>[];
 }>;

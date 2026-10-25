@@ -3,7 +3,7 @@ import {
   fauxAssistantMessage,
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
-import type { SandboxRequest } from "@fungi.computer/mycelium";
+import { type SandboxRequest } from "@fungi.computer/mycelium";
 import { fromTypedSandbox } from "@fungi.computer/mycelium/effect";
 import { bindSessionExtension } from "@fungi.computer/shiitake/client";
 import type { ShiitakeEffectOptions } from "@fungi.computer/shiitake/effect";
@@ -250,7 +250,10 @@ it("runs a fixed interval loop on its cron cadence and coalesces missed occurren
   }
 });
 
-it("fails the loop visibly when its work fails", async () => {
+it("keeps a failed tick active and exposes its retry time and reason", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const startAt = Date.parse("2026-10-08T16:00:00Z");
+  vi.setSystemTime(startAt);
   const host = await openLoop({
     model: {
       acquire: () => Effect.die(new Error("model unavailable")),
@@ -262,11 +265,359 @@ it("fails the loop visibly when its work fails", async () => {
       requestId: "kiln-1",
     });
     await host.drain();
+    const firstFailure = await host.view();
+    expect(firstFailure).toMatchObject({
+      value: {
+        loop: {
+          state: "active",
+          consecutiveFailures: 1,
+          nextDueAt: startAt + 30_000,
+        },
+      },
+    });
+    if (firstFailure.status !== "running" || firstFailure.value === null)
+      throw new Error("Retry state unavailable");
+    expect(firstFailure.value.loop.lastError).toBe(
+      "Loop work ended with outcome failed.",
+    );
+  } finally {
+    await host.dispose();
+  }
+});
+
+it("keeps a failed tick paused and resumes at its recorded retry time", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const startAt = Date.parse("2026-10-08T16:00:00Z");
+  vi.setSystemTime(startAt);
+  let pause = () => Promise.resolve();
+  let pauseOnce = true;
+  const host = await openLoop({
+    tools: scheduleTools(() => pause()),
+    model: scriptedModel([
+      scheduleCall,
+      fauxAssistantMessage("", { stopReason: "error", errorMessage: "busy" }),
+      scheduleCall,
+      fauxAssistantMessage("", { stopReason: "error", errorMessage: "busy" }),
+    ]),
+  });
+  pause = async () => {
+    if (!pauseOnce) return;
+    pauseOnce = false;
+    await host.loop.call("pause", {});
+  };
+  try {
+    await host.loop.call("startSelfPaced", {
+      prompt: "Check the kiln",
+      requestId: "paused-retry",
+    });
+    await host.drain();
+    const dueAt = startAt + 30_000;
     expect(await host.view()).toMatchObject({
       value: {
         loop: {
-          state: "failed",
-          lastError: "Loop work ended with outcome failed.",
+          state: "paused",
+          consecutiveFailures: 1,
+          nextDueAt: dueAt,
+        },
+      },
+    });
+    expect(await host.pendingWork()).toEqual({
+      pending: false,
+      nextWakeAt: null,
+    });
+
+    await expect(host.loop.call("resume", {})).resolves.toMatchObject({
+      state: "active",
+      nextDueAt: dueAt,
+    });
+    expect(await host.pendingWork()).toEqual({
+      pending: false,
+      nextWakeAt: dueAt,
+    });
+    vi.setSystemTime(dueAt);
+    await host.drain();
+    expect(await host.view()).toMatchObject({
+      value: { loop: { state: "active", consecutiveFailures: 2 } },
+    });
+  } finally {
+    await host.dispose();
+  }
+});
+
+it("preserves a fixed-interval retry deadline across pause and resume", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const startAt = Date.parse("2026-10-08T15:59:30Z");
+  vi.setSystemTime(startAt);
+  const host = await openLoop({
+    model: scriptedModel([
+      fauxAssistantMessage("initial occurrence"),
+      fauxAssistantMessage("", { stopReason: "error", errorMessage: "busy" }),
+      fauxAssistantMessage("", { stopReason: "error", errorMessage: "busy" }),
+    ]),
+  });
+  try {
+    await host.loop.call("startFixedInterval", {
+      prompt: "Walk the rows",
+      requestId: "fixed-retry",
+      expression: "0 * * * *",
+      timeZone: "UTC",
+    });
+    await host.drain();
+    const retryAt = Date.parse("2026-10-08T16:00:30Z");
+    vi.setSystemTime(Date.parse("2026-10-08T16:00:00Z"));
+    await host.drain();
+    expect(await host.view()).toMatchObject({
+      value: { loop: { nextDueAt: retryAt, consecutiveFailures: 1 } },
+    });
+
+    await host.loop.call("pause", {});
+    vi.setSystemTime(Date.parse("2026-10-08T16:00:10Z"));
+    await expect(host.loop.call("resume", {})).resolves.toMatchObject({
+      nextDueAt: retryAt,
+    });
+    expect(await host.pendingWork()).toEqual({
+      pending: false,
+      nextWakeAt: retryAt,
+    });
+    vi.setSystemTime(retryAt);
+    await host.drain();
+    expect(await host.view()).toMatchObject({
+      value: { loop: { nextDueAt: retryAt + 60_000, consecutiveFailures: 2 } },
+    });
+  } finally {
+    await host.dispose();
+  }
+});
+
+it("surfaces the stale schedule guard from an ordinary run after loop failure", async () => {
+  let observedResult: unknown;
+  const recoveryModel = scriptedModel([
+    scheduleCall,
+    (context) => {
+      observedResult = context.messages.find(
+        (message) => message.role === "toolResult",
+      );
+      return fauxAssistantMessage("stale request observed");
+    },
+  ]);
+  const host = await openLoop({
+    tools: {
+      modules: [],
+      sources: [],
+      sandbox: fromTypedSandbox({
+        execute: async (request: SandboxRequest) => {
+          const scheduleNext = request.bindings.loop?.schedule_next;
+          if (scheduleNext === undefined)
+            throw new Error("loop tools are missing");
+          return await scheduleNext({
+            delaySeconds: 60,
+            reason: "check the kiln",
+          });
+        },
+      }),
+    },
+    model: {
+      acquire: (() => {
+        let acquisitions = 0;
+        return () => {
+          acquisitions += 1;
+          return acquisitions === 1
+            ? Effect.die(new Error("model unavailable"))
+            : recoveryModel.acquire({ sessionId: "kiln", preference: null });
+        };
+      })(),
+    },
+  });
+  try {
+    await host.loop.call("startSelfPaced", {
+      prompt: "Check the kiln",
+      requestId: "failed-loop",
+    });
+    await host.drain();
+    expect(await host.view()).toMatchObject({
+      value: { loop: { state: "active", consecutiveFailures: 1 } },
+    });
+
+    await Effect.runPromise(
+      host.agent.session("kiln").send("try again", {
+        requestId: "foreign-to-failed-loop",
+        delivery: "followUp",
+      }),
+    );
+    await host.drain();
+
+    expect(observedResult).toMatchObject({
+      role: "toolResult",
+      isError: true,
+    });
+    expect(JSON.stringify(observedResult)).toContain(
+      "schedule_next only works inside this loop's own tick run",
+    );
+  } finally {
+    await host.dispose();
+  }
+});
+
+it("explains that schedule_next only works inside this loop's own tick run", async () => {
+  let observedResult: unknown;
+  const host = await openLoop({
+    tools: {
+      modules: [],
+      sources: [],
+      sandbox: fromTypedSandbox({
+        execute: async (request: SandboxRequest) =>
+          request.bindings.loop?.schedule_next?.({
+            delaySeconds: 60,
+            reason: "check the kiln",
+          }),
+      }),
+    },
+    model: scriptedModel([
+      fauxAssistantMessage(fauxToolCall("execute", { code: "schedule" }), {
+        stopReason: "toolUse",
+      }),
+      (context) => {
+        observedResult = context.messages.find(
+          (message) => message.role === "toolResult",
+        );
+        return fauxAssistantMessage("not scheduled");
+      },
+    ]),
+  });
+  try {
+    await Effect.runPromise(
+      host.agent.session("kiln").send("schedule", {
+        requestId: "outside-loop-tick",
+        delivery: "followUp",
+      }),
+    );
+    await host.drain();
+    expect(observedResult).toBeDefined();
+    expect(JSON.stringify(observedResult)).toContain(
+      "schedule_next only works inside this loop's own tick run",
+    );
+    expect(observedResult).toMatchObject({
+      role: "toolResult",
+      isError: true,
+      content: [
+        {
+          type: "text",
+        },
+      ],
+    });
+  } finally {
+    await host.dispose();
+  }
+});
+
+it("backs off every failed tick and caps retries at fifteen minutes", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const startAt = Date.parse("2026-10-08T16:00:00Z");
+  vi.setSystemTime(startAt);
+  let attempts = 0;
+  const host = await openLoop({
+    model: {
+      acquire: () => {
+        attempts += 1;
+        return Effect.die(new Error(`tick failure ${String(attempts)}`));
+      },
+    },
+  });
+  try {
+    await host.loop.call("startSelfPaced", {
+      prompt: "Check the kiln",
+      requestId: "retry-loop",
+    });
+    await host.drain();
+
+    let dueAt = startAt;
+    const backoffSteps: readonly (readonly [number, number])[] = [
+      [1, 30_000],
+      [2, 60_000],
+      [3, 120_000],
+      [4, 240_000],
+      [5, 480_000],
+      [6, 900_000],
+      [7, 900_000],
+    ];
+    for (const [failures, delay] of backoffSteps) {
+      dueAt += delay;
+      const retry = await host.view();
+      expect(retry).toMatchObject({
+        value: {
+          loop: {
+            state: "active",
+            consecutiveFailures: failures,
+            nextDueAt: dueAt,
+          },
+        },
+      });
+      if (retry.status !== "running" || retry.value === null)
+        throw new Error("Retry state unavailable");
+      expect(retry.value.loop.lastError).toBe(
+        "Loop work ended with outcome failed.",
+      );
+      vi.setSystemTime(dueAt);
+      await host.drain();
+    }
+    expect(attempts).toBe(8);
+  } finally {
+    await host.dispose();
+  }
+});
+
+it("resets the failure count after the first successful retried tick", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const startAt = Date.parse("2026-10-08T16:00:00Z");
+  vi.setSystemTime(startAt);
+  const host = await openLoop({
+    tools: scheduleTools(),
+    model: scriptedModel([
+      fauxAssistantMessage("", { stopReason: "error", errorMessage: "busy" }),
+      scheduleCall,
+      fauxAssistantMessage("scheduled"),
+    ]),
+  });
+  try {
+    await host.loop.call("startSelfPaced", {
+      prompt: "Check the kiln",
+      requestId: "reset-loop",
+    });
+    await host.drain();
+    vi.setSystemTime(startAt + 30_000);
+    await host.drain();
+    expect(await host.view()).toMatchObject({
+      value: {
+        loop: {
+          state: "active",
+          consecutiveFailures: 0,
+          lastError: null,
+          nextDueAt: startAt + 90_000,
+        },
+      },
+    });
+  } finally {
+    await host.dispose();
+  }
+});
+
+it("does not retry a cancelled tick", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const host = await openLoop({
+    model: scriptedModel([fauxAssistantMessage("", { stopReason: "aborted" })]),
+  });
+  try {
+    await host.loop.call("startSelfPaced", {
+      prompt: "Check the kiln",
+      requestId: "cancelled-tick",
+    });
+    await host.drain();
+    expect(await host.view()).toMatchObject({
+      value: {
+        loop: {
+          state: "cancelled",
+          consecutiveFailures: 0,
+          nextDueAt: null,
         },
       },
     });
@@ -436,7 +787,33 @@ it.each([
 it("fails a due loop occurrence without recreating its deleted Session", async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date("2026-10-08T16:00:00Z"));
-  const host = await openLoop();
+  let observedResult: unknown;
+  const host = await openLoop({
+    tools: {
+      ...scheduleTools(),
+      sandbox: fromTypedSandbox({
+        execute: async (request: SandboxRequest) => {
+          const scheduleNext = request.bindings.loop?.schedule_next;
+          if (scheduleNext === undefined)
+            throw new Error("loop tools are missing");
+          return await scheduleNext({
+            delaySeconds: 60,
+            reason: "check the kiln",
+          });
+        },
+      }),
+    },
+    model: scriptedModel([
+      fauxAssistantMessage("first tick"),
+      scheduleCall,
+      (context) => {
+        observedResult = context.messages.find(
+          (message) => message.role === "toolResult",
+        );
+        return fauxAssistantMessage("stale schedule was refused");
+      },
+    ]),
+  });
   try {
     await host.loop.call("startFixedInterval", {
       prompt: "Check the kiln",
@@ -465,6 +842,32 @@ it("fails a due loop occurrence without recreating its deleted Session", async (
     expect(await host.pendingWork()).toEqual({
       pending: false,
       nextWakeAt: null,
+    });
+    await Effect.runPromise(
+      host.agent.session("kiln").send("check the old loop", {
+        requestId: "schedule-failed-loop",
+        delivery: "followUp",
+      }),
+    );
+    await host.drain();
+    expect(observedResult).toMatchObject({
+      role: "toolResult",
+      isError: true,
+    });
+    expect(JSON.stringify(observedResult)).toContain(
+      "loop is failed; start a new one with loop.start",
+    );
+    await expect(
+      host.loop.call("startSelfPaced", {
+        prompt: "Check again",
+        requestId: "restart-after-failed-occurrence",
+      }),
+    ).resolves.toMatchObject({
+      loop: {
+        state: "active",
+        consecutiveFailures: 0,
+        lastError: null,
+      },
     });
   } finally {
     await host.dispose();

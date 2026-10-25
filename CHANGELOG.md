@@ -1,5 +1,23 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.1.1
+
+### Patch Changes
+
+- Changes since 0.1.0:
+
+  - fix(loop): default missing failure count on decode
+  - fix(loop): preserve pause across failed ticks
+  - fix(loop): keep retry diagnostics local
+  - fix(loop): retry failed ticks with backoff
+  - fix(shiitake-extensions): preserve tool capability errors
+
+- Updated dependencies
+- Updated dependencies
+  - @fungi.computer/knapsack@0.2.1
+  - @fungi.computer/shiitake@0.3.1
+  - @fungi.computer/mycelium@0.2.1
+
 ## 0.1.0
 
 ### Minor Changes

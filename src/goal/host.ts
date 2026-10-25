@@ -1,4 +1,8 @@
-import { Mycelium, type ModuleRegistration } from "@fungi.computer/mycelium";
+import {
+  CapabilityFailed,
+  Mycelium,
+  type ModuleRegistration,
+} from "@fungi.computer/mycelium";
 import {
   type AdmissionError,
   defineCollection,
@@ -354,9 +358,10 @@ function settle(ctx: Context, run: SettledRunV0) {
   });
 }
 
-/** Run one tool transaction and surface its failure to the model as an Error. */
+/** Run one tool transaction and preserve its owner-admitted diagnostic. */
 function toolCall<A>(
   ctx: Context,
+  operation: string,
   body: Effect.Effect<
     A,
     ExtensionCommandError | ExtensionStateError,
@@ -367,13 +372,19 @@ function toolCall<A>(
     if (Exit.isSuccess(exit)) return exit.value;
     const failure = Cause.squash(exit.cause);
     return Promise.reject(
-      new Error(
-        failure instanceof ExtensionStop
-          ? failure.reason
-          : failure instanceof Error
-            ? failure.message
-            : "Goal tool failed",
-      ),
+      new CapabilityFailed({
+        namespace: "goal",
+        operation,
+        cause: {
+          kind: "OperationFailed",
+          message:
+            failure instanceof ExtensionStop
+              ? failure.reason
+              : failure instanceof Error
+                ? failure.message
+                : "Goal tool failed",
+        },
+      }),
     );
   });
 }
@@ -404,6 +415,7 @@ function goalModule(
         execute: ({ objective }) =>
           toolCall(
             ctx,
+            "create_goal",
             Effect.gen(function* () {
               const decoded = yield* Schema.decodeUnknownEffect(Objective)(
                 objective,
@@ -448,6 +460,7 @@ function goalModule(
         execute: () =>
           toolCall(
             ctx,
+            "get_goal",
             ctx.state.goals.get(sessionId).pipe(
               Effect.map((found) =>
                 Option.isNone(found)
@@ -479,6 +492,7 @@ function goalModule(
         execute: ({ status, reason }) =>
           toolCall(
             ctx,
+            "update_goal",
             Effect.gen(function* () {
               const decoded = yield* Schema.decodeUnknownEffect(GoalReason)(
                 reason,

@@ -1,8 +1,10 @@
 import { bindSessionExtension } from "@fungi.computer/shiitake/client";
 import { expect, it } from "vitest";
+import { z } from "zod";
 
 import { goalContract } from "../src/goal/contract.js";
 import { goalExtension } from "../src/goal/host.js";
+import { loopContract } from "../src/loop/contract.js";
 import { loopExtension } from "../src/loop/host.js";
 import { planExtension } from "../src/plan/host.js";
 import { questionContract } from "../src/question/contract.js";
@@ -20,6 +22,11 @@ it("reopens current Goal/Loop/Plan state versions without rewriting their record
       expectedRevision: null,
       requestId: "installed-goal",
     });
+    const loop = bindSessionExtension(host.session("garden"), loopContract);
+    await loop.call("startSelfPaced", {
+      prompt: "Keep checking",
+      requestId: "installed-loop",
+    });
     await host.close();
     // Current records keep their representation across a cold reopen.
     for (const [id, version] of [
@@ -32,6 +39,27 @@ it("reopens current Goal/Loop/Plan state versions without rewriting their record
         version,
         id,
       );
+    const storedLoop = z
+      .object({ value_json: z.string() })
+      .parse(
+        store.owner.sql
+          .exec(
+            "SELECT value_json FROM shiitake_extension_records WHERE extension_id = ? AND collection = ?",
+            "botanical-session-loop",
+            "loops",
+          )
+          .one(),
+      );
+    const oldLoopValue = z
+      .record(z.string(), z.unknown())
+      .parse(JSON.parse(storedLoop.value_json));
+    delete oldLoopValue.consecutiveFailures;
+    store.owner.sql.exec(
+      "UPDATE shiitake_extension_records SET value_json = ? WHERE extension_id = ? AND collection = ?",
+      JSON.stringify(oldLoopValue),
+      "botanical-session-loop",
+      "loops",
+    );
     const records = () =>
       store.owner.sql
         .exec(
@@ -41,13 +69,23 @@ it("reopens current Goal/Loop/Plan state versions without rewriting their record
     const before = records();
     host = await openAgent(store.owner, roster);
     const session = host.session("garden");
+    const snapshot = await session.read();
     const reopened = bindSessionExtension(session, goalContract);
-    expect(reopened.view(await session.read())).toMatchObject({
+    expect(reopened.view(snapshot)).toMatchObject({
       status: "running",
       // A graceful close leaves the goal live; the store reopens it as it was.
       value: { goal: admitted.goal },
     });
+    const reopenedLoop = bindSessionExtension(session, loopContract);
+    expect(reopenedLoop.view(snapshot)).toMatchObject({
+      status: "running",
+      value: { loop: { consecutiveFailures: 0 } },
+    });
     expect(records()).toEqual(before);
+    await expect(reopenedLoop.call("pause", {})).resolves.toMatchObject({
+      state: "paused",
+      consecutiveFailures: 0,
+    });
     expect(
       store.owner.sql
         .exec(

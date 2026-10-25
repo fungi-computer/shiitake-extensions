@@ -1,4 +1,8 @@
-import { Mycelium, type ModuleRegistration } from "@fungi.computer/mycelium";
+import {
+  CapabilityFailed,
+  Mycelium,
+  type ModuleRegistration,
+} from "@fungi.computer/mycelium";
 import {
   type AdmissionError,
   defineCollection,
@@ -28,7 +32,7 @@ import { Loop, LoopCommandInput, loopContract } from "./contract.js";
 
 /** The rules the model follows; the describe page and a live loop's prompt share them. */
 const rules =
-  "You may start loops yourself; one live loop per Session. schedule_next is allowed only in the active self-paced loop's own run, clamped to 60–3600 seconds. Omitting it ends that loop. stop works in any Session run. Human pause/resume/stop and Esc remain user controls.";
+  "You may start loops yourself; one live loop per Session. Failed loop ticks retry with backoff; loop.get shows consecutiveFailures, lastError, and nextDueAt. schedule_next is allowed only in the active self-paced loop's own run, clamped to 60–3600 seconds. Omitting it ends that loop. stop works in any Session run. Human pause/resume/stop and Esc remain user controls.";
 
 /** Hashed prose and policy: every constant loop reads comes from here. */
 const config = {
@@ -60,6 +64,10 @@ const LoopRow = Schema.Struct({
       delaySeconds: Schema.Number,
       reason: Schema.String,
     }),
+  ),
+  consecutiveFailures: Schema.Int.pipe(
+    Schema.check(Schema.isGreaterThanOrEqualTo(0)),
+    Schema.withDecodingDefaultKey(Effect.succeed(0)),
   ),
 });
 type LoopRow = Schema.Schema.Type<typeof LoopRow>;
@@ -95,6 +103,7 @@ function projected(row: LoopRow): Loop {
     reason: row.reason,
     nextDueAt: row.nextDueAt,
     lastError: row.lastError,
+    consecutiveFailures: row.consecutiveFailures,
   };
 }
 
@@ -186,6 +195,7 @@ function start(
       lastError: null,
       startRequestId: input.requestId,
       requested: null,
+      consecutiveFailures: 0,
     };
     const stored =
       cron === null
@@ -223,6 +233,10 @@ function requireLoop(ctx: Context, sessionId: string): Step<LoopRow> {
 
 /** Where a resumed loop picks up: its cadence, or its recorded next instant. */
 function resumeAt(loop: LoopRow, now: number) {
+  if (loop.consecutiveFailures > 0)
+    return Effect.succeed(
+      loop.nextDueAt === null ? null : Math.max(now, loop.nextDueAt),
+    );
   return loop.cron === null
     ? Effect.succeed(loop.nextDueAt)
     : nextOccurrence(loop.cron, now);
@@ -236,6 +250,28 @@ function settle(ctx: Context, run: SettledRunV0) {
     const loop = found.value;
     if (loop.state !== "active" && loop.state !== "paused") return;
     if (run.workId !== loop.commandId) return;
+    if (run.outcome === "failed") {
+      const consecutiveFailures = Math.min(
+        Number.MAX_SAFE_INTEGER,
+        loop.consecutiveFailures + 1,
+      );
+      const backoffExponent = Math.min(consecutiveFailures - 1, 5);
+      const delayMs = Math.min(15 * 60_000, 30_000 * 2 ** backoffExponent);
+      const now = yield* Clock.currentTimeMillis;
+      const dueAt = now + delayMs;
+      const retry: LoopRow = {
+        ...loop,
+        state: loop.state,
+        requested: null,
+        reason: null,
+        nextDueAt: dueAt,
+        lastError: "Loop work ended with outcome failed.",
+        consecutiveFailures,
+      };
+      if (loop.state === "paused") yield* commitLoop(ctx, retry);
+      else yield* arm(ctx, retry, dueAt);
+      return yield* ctx.observe(loop.sessionId);
+    }
     if (run.outcome !== "completed" || run.terminal !== "completed") {
       yield* ctx.timers.cancel(loop.sessionId);
       yield* commitLoop(ctx, {
@@ -248,11 +284,22 @@ function settle(ctx: Context, run: SettledRunV0) {
           run.outcome === "completed"
             ? "Completed loop work has no exact terminal."
             : `Loop work ended with outcome ${run.outcome}.`,
+        consecutiveFailures: loop.consecutiveFailures,
       });
       return yield* ctx.observe(loop.sessionId);
     }
     // A fixed interval loop's cadence is armed independently of its runs.
-    if (loop.mode === "fixed_interval") return;
+    if (loop.mode === "fixed_interval") {
+      if (loop.consecutiveFailures !== 0 || loop.lastError !== null) {
+        yield* commitLoop(ctx, {
+          ...loop,
+          consecutiveFailures: 0,
+          lastError: null,
+        });
+        yield* ctx.observe(loop.sessionId);
+      }
+      return;
+    }
     // Omitting schedule_next during the run ends a self-paced loop.
     if (loop.requested?.workId !== run.workId) {
       yield* commitLoop(ctx, {
@@ -260,6 +307,8 @@ function settle(ctx: Context, run: SettledRunV0) {
         state: "finished",
         reason: "no next wake requested",
         nextDueAt: null,
+        lastError: null,
+        consecutiveFailures: 0,
       });
       return yield* ctx.observe(loop.sessionId);
     }
@@ -269,6 +318,8 @@ function settle(ctx: Context, run: SettledRunV0) {
       reason: loop.requested.reason,
       requested: null,
       nextDueAt: now + loop.requested.delaySeconds * 1_000,
+      lastError: null,
+      consecutiveFailures: 0,
     };
     // A paused loop keeps the instant; resume arms it.
     if (loop.state === "paused") yield* commitLoop(ctx, scheduled);
@@ -342,9 +393,10 @@ function fire(ctx: Context, sessionId: string, dueAt: number, now: number) {
   });
 }
 
-/** Run one tool transaction and surface its failure to the model as an Error. */
+/** Run one tool transaction and preserve its owner-admitted diagnostic. */
 function toolCall<A>(
   ctx: Context,
+  operation: string,
   body: Effect.Effect<
     A,
     ExtensionCommandError | ExtensionStateError | AdmissionError,
@@ -355,13 +407,19 @@ function toolCall<A>(
     if (Exit.isSuccess(exit)) return exit.value;
     const failure = Cause.squash(exit.cause);
     return Promise.reject(
-      new Error(
-        failure instanceof ExtensionStop
-          ? failure.reason
-          : failure instanceof Error
-            ? failure.message
-            : "Loop tool failed",
-      ),
+      new CapabilityFailed({
+        namespace: "loop",
+        operation,
+        cause: {
+          kind: "OperationFailed",
+          message:
+            failure instanceof ExtensionStop
+              ? failure.reason
+              : failure instanceof Error
+                ? failure.message
+                : "Loop tool failed",
+        },
+      }),
     );
   });
 }
@@ -386,6 +444,7 @@ const toolLoop = z.strictObject({
   reason: z.string().nullable(),
   nextDueAt: z.number().nullable(),
   lastError: z.string().nullable(),
+  consecutiveFailures: z.number().int().nonnegative(),
 });
 
 /** The self-paced `schedule_next` tool for exactly the loop's current run. */
@@ -408,6 +467,7 @@ function loopModule(
         execute: () =>
           toolCall(
             ctx,
+            "get",
             ctx.state.loops
               .get(sessionId)
               .pipe(
@@ -442,6 +502,7 @@ function loopModule(
         execute: ({ prompt, cadence }) =>
           toolCall(
             ctx,
+            "start",
             Effect.gen(function* () {
               const requestId = yield* freshRequestId;
               const cron =
@@ -472,7 +533,7 @@ function loopModule(
         input: z.strictObject({ reason: z.string().trim().min(1).max(1_000) }),
         output: toolLoop,
         execute: ({ reason }) =>
-          toolCall(ctx, stopLoop(ctx, sessionId, reason)),
+          toolCall(ctx, "stop", stopLoop(ctx, sessionId, reason)),
       }),
       schedule_next: Mycelium.operation({
         replay: "unsafe",
@@ -486,15 +547,29 @@ function loopModule(
         execute: ({ delaySeconds, reason }) =>
           toolCall(
             ctx,
+            "schedule_next",
             Effect.gen(function* () {
               const found = yield* ctx.state.loops.get(sessionId);
+              if (Option.isNone(found))
+                return yield* Effect.fail(
+                  conflict(
+                    "schedule_next only works inside this loop's own tick run",
+                  ),
+                );
+              if (found.value.state === "failed")
+                return yield* Effect.fail(
+                  conflict("loop is failed; start a new one with loop.start"),
+                );
               if (
-                Option.isNone(found) ||
                 found.value.state !== "active" ||
                 found.value.mode !== "self_paced" ||
                 found.value.commandId !== workId
               )
-                return yield* Effect.fail(conflict("Loop work guard is stale"));
+                return yield* Effect.fail(
+                  conflict(
+                    "schedule_next only works inside this loop's own tick run",
+                  ),
+                );
               const clamped = Math.max(
                 ctx.config.minDelaySeconds,
                 Math.min(ctx.config.maxDelaySeconds, delaySeconds),
@@ -743,10 +818,13 @@ export const loopCatalog = catalog([
 /** Durable Session loop implementation with prompts, controls and scheduled occurrences. */
 export const loopExtension: RosteredExtensionV0 = defineExtension({
   id: loopContract.id,
-  version: "3.0.0",
+  version: "4.0.0",
 })
   .config(config)
-  .state({ version: 3, migrations: {}, collections })
+  .state({
+    version: 3,
+    collections,
+  })
   .define({
     prompt: (ctx, { sessionId }) =>
       ctx.state.loops.get(sessionId).pipe(

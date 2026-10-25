@@ -1,6 +1,6 @@
 {
   "name": "@fungi.computer/shiitake-extensions",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": "Levi <levi@technomancy.dev>",
   "private": false,
   "description": "Botanical's product Shiitake extensions: goal, loop and Almanac on the generic extension surface",

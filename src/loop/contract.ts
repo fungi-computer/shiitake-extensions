@@ -61,6 +61,10 @@ export const Loop = Schema.Struct({
   nextDueAt: Schema.NullOr(Schema.Int),
   /** Visible explanation when loop work failed. */
   lastError: Schema.NullOr(Schema.String),
+  /** Consecutive failed work outcomes; successful work resets this to zero. */
+  consecutiveFailures: Schema.Int.pipe(
+    Schema.check(Schema.isGreaterThanOrEqualTo(0)),
+  ),
 });
 /** One Session's loop. */
 export type Loop = Schema.Schema.Type<typeof Loop>;

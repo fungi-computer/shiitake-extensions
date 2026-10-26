@@ -1,5 +1,22 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.2.0
+
+### Minor Changes
+
+- Changes since 0.1.1:
+
+  - feat(mesh): wip sessionless acceptance checkpoint
+  - fix(oyster): prepare Home Computers on first use
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @fungi.computer/knapsack@0.3.0
+  - @fungi.computer/shiitake@0.4.0
+  - @fungi.computer/mycelium@0.2.2
+
 ## 0.1.1
 
 ### Patch Changes

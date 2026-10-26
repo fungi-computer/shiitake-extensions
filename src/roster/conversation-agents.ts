@@ -66,13 +66,17 @@ export function createConversationAgents(storage: WatchdogSqliteOwner) {
       Date.now(),
     );
   }
-  /** A send names the conversation to open and moves the row to the front. */
-  function sent(parentSessionId: string, agentId: string, sessionId: string) {
+  /** A send may not know its Session until the recipient accepts it. */
+  function sent(
+    parentSessionId: string,
+    agentId: string,
+    sessionId: string | undefined,
+  ) {
     sql().exec(
       "INSERT INTO oyster_conversation_agents(parent_session_id, agent_id, session_id, at) VALUES (?, ?, ?, ?) ON CONFLICT(parent_session_id, agent_id) DO UPDATE SET session_id = excluded.session_id, at = excluded.at",
       parentSessionId,
       agentId,
-      sessionId,
+      sessionId ?? null,
       Date.now(),
     );
   }

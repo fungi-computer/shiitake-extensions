@@ -42,7 +42,10 @@ const collections = {
 /** Agent-scope choice with per-run tools and prompt over one captured table. */
 export function homeExtension(options: {
   computers: {
+    /** Read the table inside the synchronous Home choice transaction. */
     read: (context: Readonly<{ sessionId: string }>) => readonly HomeComputer[];
+    /** Optional host preparation before run-scoped Files capture. */
+    prepare?: (context: Readonly<{ sessionId: string }>) => Promise<void>;
   };
 }): RosteredExtensionV0 {
   // Core retains one RunIdentity for Files and every prompt request. Weak keys
@@ -77,7 +80,8 @@ export function homeExtension(options: {
         read: (ctx) =>
           Option.some(Option.getOrNull(ctx.state.choice.peek("default"))),
       },
-      files: (ctx, run) => {
+      files: async (ctx, run) => {
+        await options.computers.prepare?.(run);
         const computers = [...options.computers.read(run)];
         const choice = ctx.state.update((state) => {
           const recorded = Option.getOrNull(state.choice.get("default"));

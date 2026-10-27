@@ -97,7 +97,16 @@ export const LoopCommandInput = Schema.Union([
   }),
   Schema.Struct({
     /** Select an existing-loop control or open new-loop entry. */
-    action: Schema.Literals(["status", "pause", "resume", "stop", "new"]),
+    action: Schema.Literals([
+      "status",
+      "pause",
+      "resume",
+      "stop",
+      "stop-ask",
+      "new",
+    ]),
+    /** The human's answer to "stop this loop?"; absent for a typed stop. */
+    confirmed: Schema.optional(Schema.Boolean),
   }),
   Schema.Struct({}),
 ]);

@@ -14,6 +14,7 @@ import {
   type ExtensionStateError,
   type ExtensionTx,
   type RosteredExtensionV0,
+  type FiredTimerV0,
   type SettledRunV0,
 } from "@fungi.computer/shiitake/extensions";
 import * as Cause from "effect/Cause";
@@ -43,24 +44,32 @@ import {
   GoalReason,
   Objective,
 } from "./contract.js";
+import type { SubagentSource } from "../subagents/host.js";
+import {
+  clearConfirmation,
+  goalMenuPrompt,
+  replaceConfirmation,
+} from "./prompts.js";
 
 /** The rules the model follows; the describe page and an active goal's prompt share them. */
 const rules =
-  "You may start a goal yourself when none is current. Before marking complete audit every requirement against evidence; complete only after actual achievement. Block only after the same external impasse for three consecutive goal turns; a blocked goal pauses until a person resumes it. Human pause/resume/clear remain human controls. Use plan.update_plan for multi-step work when available.";
+  "You may start a goal yourself when none is current. Before marking complete audit every requirement against evidence; complete only after actual achievement. Block only after the same external impasse for three consecutive goal turns; a blocked goal stays paused until it is resumed. You may complete, block, clear or resume a goal that paused on its own (stalled, blocked or failed work); a goal a person paused or stopped you may only complete, and only a person clears a live goal. Human pause/resume/clear remain human controls. Use plan.update_plan for multi-step work when available.";
 
 /** Hashed prose and policy: every constant goal reads comes from here. */
 const config = {
   continuation:
     "Continue working toward the current goal described in the goal section. Find goal.get_goal and goal.update_goal with forage.search({query:'goal'}) and forage.describe. Audit every requirement against evidence before goal.update_goal({status:'complete', reason}). If the same external blocker persists for three goal turns, report blocked with a reason. Check for progress rather than repeating yourself.",
   moduleDescription:
-    "Session goal tools: create_goal({objective}), get_goal({}), update_goal({status:'complete'|'blocked', reason}). " +
+    "Session goal tools: create_goal({objective}), get_goal({}), update_goal({status:'complete'|'blocked'|'clear'|'resume', reason}). " +
     rules,
   createDescription:
     "Create a Session goal, including autonomously. Fails while a goal is active or paused; a finished goal is history.",
   getDescription:
     "Read the current goal. A requested terminal state remains provisional until successful settlement.",
   updateDescription:
-    "Request complete only after actual achievement, or blocked only after the same external impasse for three consecutive goal turns; settlement commits the request. Complete ends the goal; blocked pauses it for a person.",
+    "Request complete only after actual achievement, or blocked only after the same external impasse for three consecutive goal turns; both also work on a paused goal, and settlement commits the request. Complete ends the goal; blocked pauses it for a person. clear abandons a paused goal with your reason. resume reactivates a paused goal now. A goal a person paused or stopped accepts only complete.",
+  waitCheckMs: 60_000,
+  waitingSummary: "Waiting on sub-agent",
   promptLimit: 1_024,
   stallTurns: 3,
   stallReason: "Stalled: no progress for 3 turns",
@@ -101,7 +110,7 @@ const GoalRow = Schema.Struct({
   /** A model-requested terminal, committed only by its run's success. */
   pending: Schema.NullOr(
     Schema.Struct({
-      state: Schema.Literals(["complete", "blocked"]),
+      state: Schema.Literals(["complete", "blocked", "cleared"]),
       reason: GoalReason,
     }),
   ),
@@ -150,6 +159,7 @@ function committed(row: GoalRow): Goal {
 function commitGoal(ctx: Context, row: GoalRow) {
   return Effect.gen(function* () {
     yield* ctx.state.goals.put(row);
+    yield* ctx.attention.clear(row.sessionId, "waiting-goal");
     if (
       row.state === "paused" &&
       (row.pauseCause?.kind === "blocked" || row.pauseCause?.kind === "stalled")
@@ -234,6 +244,7 @@ function finishGoal(
     });
     yield* ctx.state.goals.remove(goal.sessionId);
     yield* ctx.attention.clear(goal.sessionId, "paused-goal");
+    yield* ctx.attention.clear(goal.sessionId, "waiting-goal");
   });
 }
 
@@ -296,7 +307,7 @@ function continueIfIdle(ctx: Context, goal: GoalRow, requestId: string) {
  * settles here like any other, so the goal keeps going. An achieved goal
  * finishes and leaves the current slot.
  */
-function settle(ctx: Context, run: SettledRunV0) {
+function settle(ctx: Context, run: SettledRunV0, subagents?: SubagentSource) {
   return Effect.gen(function* () {
     const found = yield* ctx.state.goals.get(run.sessionId);
     if (Option.isNone(found)) return;
@@ -324,6 +335,10 @@ function settle(ctx: Context, run: SettledRunV0) {
       );
       return yield* ctx.observe(run.sessionId);
     }
+    const waitingForChild =
+      run.toolCalls === 0 &&
+      subagents?.hasLiveChildCommand(run.sessionId) === true &&
+      run.origin?.extensionId === goalContract.id;
     const tracked: GoalRow = {
       ...goal,
       trackedWorkId: run.workId,
@@ -333,28 +348,88 @@ function settle(ctx: Context, run: SettledRunV0) {
           ? run.toolCalls === 0
             ? goal.stalledTurns + 1
             : 0
-          : goal.stalledTurns,
+          : 0,
     };
     const pending = goal.trackedWorkId === run.workId ? goal.pending : null;
     if (pending?.state === "complete")
       yield* finishGoal(ctx, tracked, "achieved", pending.reason);
+    else if (pending?.state === "cleared")
+      yield* finishGoal(ctx, tracked, "cleared", pending.reason);
     else if (pending?.state === "blocked")
       yield* commitGoal(ctx, paused(tracked, "blocked", pending.reason));
     else if (
       goal.state === "active" &&
+      !waitingForChild &&
       tracked.stalledTurns >= ctx.config.stallTurns
     )
       yield* commitGoal(
         ctx,
         paused(tracked, "stalled", ctx.config.stallReason),
       );
-    else if (goal.state === "active")
+    else if (goal.state === "active" && waitingForChild) {
+      // A tool-free goal turn while a child command is live is waiting, not
+      // stalling: show it, and recheck on a timer so the goal resumes when the
+      // child settles even if no reply mail wakes this Session.
+      yield* commitGoal(ctx, tracked);
+      const now = yield* Clock.currentTimeMillis;
+      yield* ctx.attention.set(run.sessionId, {
+        id: "waiting-goal",
+        kind: "goal-waiting",
+        inbox: false,
+        summary: `${ctx.config.waitingSummary}: ${tracked.objective}`.slice(
+          0,
+          200,
+        ),
+        since: now,
+      });
+      yield* ctx.timers.set(
+        waitTimerKey(run.sessionId),
+        now + ctx.config.waitCheckMs,
+      );
+    } else if (goal.state === "active")
       yield* commitGoal(
         ctx,
         yield* continueIfIdle(ctx, tracked, `goal-continue:${run.workId}`),
       );
     else yield* commitGoal(ctx, tracked);
     yield* ctx.observe(run.sessionId);
+  });
+}
+
+const waitTimerPrefix = "waiting:";
+function waitTimerKey(sessionId: string): string {
+  return `${waitTimerPrefix}${sessionId}`;
+}
+
+/**
+ * Recheck a goal that is waiting on a child command: keep waiting while the
+ * child is live, otherwise admit the next goal turn (an idle-only, replayed
+ * admission, so a Session that already moved on is unaffected).
+ */
+function recheckWaiting(
+  ctx: Context,
+  timer: FiredTimerV0,
+  subagents: SubagentSource | undefined,
+) {
+  return Effect.gen(function* () {
+    if (!timer.key.startsWith(waitTimerPrefix)) return;
+    const sessionId = timer.key.slice(waitTimerPrefix.length);
+    const found = yield* ctx.state.goals.get(sessionId);
+    if (Option.isNone(found) || found.value.state !== "active") return;
+    if (subagents?.hasLiveChildCommand(sessionId) === true)
+      return yield* ctx.timers.set(
+        timer.key,
+        timer.firedAt + ctx.config.waitCheckMs,
+      );
+    yield* commitGoal(
+      ctx,
+      yield* continueIfIdle(
+        ctx,
+        found.value,
+        `goal-wait:${found.value.trackedWorkId}`,
+      ),
+    );
+    yield* ctx.observe(sessionId);
   });
 }
 
@@ -391,14 +466,32 @@ function toolCall<A>(
 
 // Mycelium's maintained operation interface takes Zod for model-tool I/O.
 const toolObjective = z.string().min(1).max(4_000);
-const toolState = z.enum(["active", "paused", "complete", "blocked"]);
+const toolState = z.enum([
+  "active",
+  "paused",
+  "complete",
+  "blocked",
+  "cleared",
+]);
 
-/** The model-facing goal tools for one run, guarded by that run's work id. */
+/** The model-facing goal tools for one run, fenced by the goal it saw. */
 function goalModule(
   ctx: Context,
   sessionId: string,
   workId: string,
+  initialRevision: string | null,
 ): ModuleRegistration {
+  const currentGoal = Effect.gen(function* () {
+    const found = yield* ctx.state.goals.get(sessionId);
+    if (Option.isNone(found))
+      return yield* Effect.fail(conflict("No Session goal"));
+    if (
+      found.value.revision !== initialRevision &&
+      found.value.revision !== `run:${workId}`
+    )
+      return yield* Effect.fail(conflict("Session goal work guard is stale"));
+    return found.value;
+  });
   return Mycelium.module({
     id: "botanical.session-goal",
     name: "goal",
@@ -481,12 +574,12 @@ function goalModule(
         replay: "unsafe",
         description: ctx.config.updateDescription,
         input: z.strictObject({
-          status: z.enum(["complete", "blocked"]),
+          status: z.enum(["complete", "blocked", "clear", "resume"]),
           reason: z.string().min(1).max(1_000),
         }),
         output: z.strictObject({
           objective: toolObjective,
-          state: z.enum(["complete", "blocked"]),
+          state: z.enum(["active", "complete", "blocked", "cleared"]),
           reason: z.string(),
         }),
         execute: ({ status, reason }) =>
@@ -497,28 +590,67 @@ function goalModule(
               const decoded = yield* Schema.decodeUnknownEffect(GoalReason)(
                 reason,
               ).pipe(Effect.mapError(() => conflict("Goal reason is invalid")));
-              const found = yield* ctx.state.goals.get(sessionId);
-              if (
-                Option.isNone(found) ||
-                found.value.trackedWorkId !== workId ||
-                found.value.state !== "active"
-              )
+              const goal = yield* currentGoal;
+              // A person's pause or stop is theirs: the model may only finish it.
+              if (status !== "complete" && heldByPerson(goal))
                 return yield* Effect.fail(
-                  conflict("Session goal work guard is stale"),
+                  conflict(
+                    "A person paused or stopped this goal; only complete is available to you",
+                  ),
                 );
+              if (status === "resume") {
+                const resumed = yield* modelResume(goal, workId);
+                yield* commitGoal(ctx, resumed);
+                yield* ctx.observe(sessionId);
+                return {
+                  objective: goal.objective,
+                  state: "active" as const,
+                  reason: decoded,
+                };
+              }
+              // Only a person discards a live goal; the model may clear a paused one.
+              if (status === "clear" && goal.state !== "paused")
+                return yield* Effect.fail(
+                  conflict("Only a paused Session goal can be cleared"),
+                );
+              const state = status === "clear" ? "cleared" : status;
               yield* commitGoal(ctx, {
-                ...found.value,
-                pending: { state: status, reason: decoded },
+                ...goal,
+                // This run's settlement commits the provisional terminal.
+                trackedWorkId: workId,
+                pending: { state, reason: decoded },
               });
-              return {
-                objective: found.value.objective,
-                state: status,
-                reason: decoded,
-              };
+              return { objective: goal.objective, state, reason: decoded };
             }),
           ),
       }),
     },
+  });
+}
+
+/** A person's pause or Esc; only a person resumes, blocks or clears it. */
+function heldByPerson(goal: GoalRow): boolean {
+  return (
+    goal.state === "paused" &&
+    (goal.pauseCause?.kind === "person" ||
+      goal.pauseCause?.kind === "cancelled")
+  );
+}
+
+/**
+ * The model resumes its own paused goal. The resuming run becomes the
+ * tracked work, so its settlement admits the next goal turn.
+ */
+function modelResume(goal: GoalRow, workId: string) {
+  if (goal.state !== "paused")
+    return Effect.fail(conflict("Session goal is not paused"));
+  return Effect.succeed<GoalRow>({
+    ...goal,
+    state: "active",
+    pauseCause: null,
+    pending: null,
+    stalledTurns: 0,
+    trackedWorkId: workId,
   });
 }
 
@@ -613,6 +745,7 @@ function setGoal(
   });
 }
 
+/** The one-line state the model prompt and attention summaries carry. */
 function goalLine(goal: Goal): string {
   if (goal.state === "active") return `Pursuing goal: ${goal.objective}`;
   return goal.pauseCause?.detail == null
@@ -657,25 +790,19 @@ function humanGoal(
           { action: "set", requestId: yield* freshRequestId },
           "objective",
         );
-      const goal = committed(current);
       return ask(
-        {
-          type: "choice",
-          message: goalLine(goal),
-          options: [
-            goal.state === "active"
-              ? { value: "pause", label: "Pause goal" }
-              : { value: "resume", label: "Resume goal" },
-            { value: "clear", label: "Clear goal" },
-            { value: "replace", label: "Replace goal" },
-          ],
-        },
+        goalMenuPrompt(committed(current), yield* Clock.currentTimeMillis),
         {},
         "action",
       );
     }
     switch (input.action) {
+      case "clear-ask":
+        // The menu's Clear: Keep is the focused answer to this destructive step.
+        return ask(clearConfirmation, { action: "clear" }, "confirmed");
       case "clear":
+        if (input.confirmed === false)
+          return declined({ type: "info", message: "Kept the goal." });
         // The chat's ending line confirms a clear; only an empty one says so.
         return (yield* clearGoal(ctx, sessionId))
           ? { type: "done" }
@@ -693,7 +820,6 @@ function humanGoal(
             action: "set",
             requestId: yield* freshRequestId,
             expectedRevision: current?.revision ?? null,
-            confirmed: true,
           },
           "objective",
         );
@@ -705,12 +831,7 @@ function humanGoal(
           return declined({ type: "info", message: "Kept the current goal." });
         if (replacing && input.confirmed !== true)
           return ask(
-            {
-              type: "confirmation",
-              message: `Replace the ${current.state === "active" ? "live" : "paused"} goal?\nCurrent: ${current.objective}\nNew: ${input.objective}`,
-              confirmLabel: "Replace and start",
-              cancelLabel: "Keep current goal",
-            },
+            replaceConfirmation(committed(current), input.objective),
             {
               action: "set",
               objective: input.objective,
@@ -774,78 +895,108 @@ export const goalCatalog = catalog([
   },
 ]);
 
-/** Botanical's Session goal, driven only by settled runs. */
-export const goalExtension: RosteredExtensionV0 = defineExtension({
-  id: goalContract.id,
-  version: "7.0.0",
-})
-  .config(config)
-  // A command anchor cannot be converted into a historical Session position.
-  // Old preview state must be republished separately, never guessed here.
-  .state({ version: 7, migrations: {}, collections })
-  .define({
-    attention: true,
-    prompt: (ctx, { sessionId, origin }) =>
-      Effect.gen(function* () {
-        const goal = Option.getOrNull(yield* ctx.state.goals.get(sessionId));
-        const text =
-          goal === null
-            ? ctx.config.idle
-            : (goal.state === "active" ? ctx.config.guide : ctx.config.idle) +
-              "\n" +
-              goalLine(committed(goal));
-        return [
-          {
-            name: "goal",
-            text: boundedPrompt(text, ctx.config.promptLimit),
+/** Botanical's Session goal; hosts with created-Agent facts include them in progress. */
+export function goalExtensionFor(
+  subagents?: SubagentSource,
+): RosteredExtensionV0 {
+  return (
+    defineExtension({
+      id: goalContract.id,
+      version: "7.0.0",
+    })
+      .config(config)
+      // A command anchor cannot be converted into a historical Session position.
+      // Old preview state must be republished separately, never guessed here.
+      .state({ version: 7, migrations: {}, collections })
+      .define({
+        attention: true,
+        prompt: (ctx, { sessionId, origin }) =>
+          Effect.gen(function* () {
+            const goal = Option.getOrNull(
+              yield* ctx.state.goals.get(sessionId),
+            );
+            const text =
+              goal === null
+                ? ctx.config.idle
+                : (goal.state === "active"
+                    ? ctx.config.guide
+                    : ctx.config.idle) +
+                  "\n" +
+                  goalLine(committed(goal));
+            return [
+              {
+                name: "goal",
+                text: boundedPrompt(text, ctx.config.promptLimit),
+              },
+              ...(goal?.state === "active" &&
+              origin?.extensionId === goalContract.id &&
+              origin.correlation !== null
+                ? [
+                    {
+                      name: "goal-continuation",
+                      text: boundedPrompt(
+                        ctx.config.continuation,
+                        ctx.config.promptLimit,
+                      ),
+                    },
+                  ]
+                : []),
+            ];
+          }),
+        catalog: goalCatalog,
+        projection: {
+          schema: goalContract.projection.schema,
+          read: (ctx, sessionId) => {
+            const goal = Option.getOrUndefined(ctx.state.goals.peek(sessionId));
+            const endings = Option.getOrUndefined(
+              ctx.state.endings.peek(sessionId),
+            );
+            if (goal === undefined && endings === undefined)
+              return Option.none();
+            const ended = endings?.ended ?? [];
+            return Option.some({
+              goal: goal === undefined ? null : committed(goal),
+              ended,
+              omitted: (endings?.total ?? 0) - ended.length,
+            });
           },
-          ...(goal?.state === "active" &&
-          origin?.extensionId === goalContract.id &&
-          origin.correlation !== null
-            ? [
-                {
-                  name: "goal-continuation",
-                  text: boundedPrompt(
-                    ctx.config.continuation,
-                    ctx.config.promptLimit,
+        },
+        hooks: {
+          onSettled: (ctx, page) =>
+            Effect.forEach(page, (run) => settle(ctx, run, subagents), {
+              discard: true,
+            }),
+          onTimer: (ctx, timer) => recheckWaiting(ctx, timer, subagents),
+        },
+        tools: (ctx, { sessionId, workId }) =>
+          ctx.state.goals
+            .get(sessionId)
+            .pipe(
+              Effect.map((found) =>
+                Option.some(
+                  goalModule(
+                    ctx,
+                    sessionId,
+                    workId,
+                    Option.isSome(found) ? found.value.revision : null,
                   ),
-                },
-              ]
-            : []),
-        ];
-      }),
-    catalog: goalCatalog,
-    projection: {
-      schema: goalContract.projection.schema,
-      read: (ctx, sessionId) => {
-        const goal = Option.getOrUndefined(ctx.state.goals.peek(sessionId));
-        const endings = Option.getOrUndefined(
-          ctx.state.endings.peek(sessionId),
-        );
-        if (goal === undefined && endings === undefined) return Option.none();
-        const ended = endings?.ended ?? [];
-        return Option.some({
-          goal: goal === undefined ? null : committed(goal),
-          ended,
-          omitted: (endings?.total ?? 0) - ended.length,
-        });
-      },
-    },
-    hooks: {
-      onSettled: (ctx, page) =>
-        Effect.forEach(page, (run) => settle(ctx, run), { discard: true }),
-    },
-    tools: (ctx, { sessionId, workId }) =>
-      Effect.succeed(Option.some(goalModule(ctx, sessionId, workId))),
-    commands: {
-      specs: goalContract.commands,
-      handlers: (ctx) => ({
-        goal: ({ sessionId, input }) => humanGoal(ctx, sessionId, input),
-        pause: ({ sessionId }) => pauseGoal(ctx, sessionId),
-        resume: ({ sessionId }) => resumeGoal(ctx, sessionId),
-        clear: ({ sessionId }: { sessionId: string }) =>
-          clearGoal(ctx, sessionId).pipe(Effect.as({})),
-        set: ({ sessionId, input }) => setGoal(ctx, sessionId, input),
-      }),
-    },
-  });
+                ),
+              ),
+            ),
+        commands: {
+          specs: goalContract.commands,
+          handlers: (ctx) => ({
+            goal: ({ sessionId, input }) => humanGoal(ctx, sessionId, input),
+            pause: ({ sessionId }) => pauseGoal(ctx, sessionId),
+            resume: ({ sessionId }) => resumeGoal(ctx, sessionId),
+            clear: ({ sessionId }: { sessionId: string }) =>
+              clearGoal(ctx, sessionId).pipe(Effect.as({})),
+            set: ({ sessionId, input }) => setGoal(ctx, sessionId, input),
+          }),
+        },
+      })
+  );
+}
+
+/** Ordinary roster when no created-Agent directory is available. */
+export const goalExtension: RosteredExtensionV0 = goalExtensionFor();

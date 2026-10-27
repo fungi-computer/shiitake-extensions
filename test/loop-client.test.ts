@@ -66,7 +66,7 @@ it.each([
     );
     expect(result.waiting).toEqual({
       summary: `Waiting until ${displayed}`,
-      cancel: { id: "loop", label: "stop loop", input: { action: "stop" } },
+      cancel: { id: "loop", label: "stop loop", input: { action: "stop-ask" } },
     });
     expect(result.panel[0]?.title).not.toContain(".593Z");
   },

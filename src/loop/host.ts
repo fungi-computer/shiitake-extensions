@@ -25,10 +25,17 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { z } from "zod";
 
-import { ask, catalog, done, freshRequestId } from "../internal/catalog.js";
+import {
+  ask,
+  catalog,
+  declined,
+  done,
+  freshRequestId,
+} from "../internal/catalog.js";
 
 import { nextOccurrence } from "../internal/cron.js";
 import { Loop, LoopCommandInput, loopContract } from "./contract.js";
+import { loopMenuPrompt, stopConfirmation } from "./prompts.js";
 
 /** The rules the model follows; the describe page and a live loop's prompt share them. */
 const rules =
@@ -692,8 +699,8 @@ function loopLine(loop: Loop): string {
 
 const loopPrompt = {
   type: "text",
-  message:
-    "What should the loop repeat? Start with 5m or 1h for a fixed interval.",
+  message: "What should the loop repeat?",
+  summary: "Start with 5m or 1h for a fixed interval.",
   placeholder: "Check the build and fix what broke",
 } as const;
 
@@ -714,20 +721,7 @@ function humanLoop(
           { action: "start", requestId: yield* freshRequestId },
           "text",
         );
-      return ask(
-        {
-          type: "choice",
-          message: loopLine(current),
-          options: [
-            current.state === "active"
-              ? { value: "pause", label: "Pause loop" }
-              : { value: "resume", label: "Resume loop" },
-            { value: "stop", label: "Stop loop" },
-          ],
-        },
-        {},
-        "action",
-      );
+      return ask(loopMenuPrompt(current), {}, "action");
     }
     switch (input.action) {
       case "status":
@@ -754,7 +748,12 @@ function humanLoop(
           type: "success",
           message: loopLine(yield* resumeLoop(ctx, sessionId)),
         });
+      case "stop-ask":
+        // The menu's Stop: Keep is the focused answer to this destructive step.
+        return ask(stopConfirmation, { action: "stop" }, "confirmed");
       case "stop":
+        if (input.confirmed === false)
+          return declined({ type: "info", message: "Kept the loop." });
         return done({
           type: "success",
           message: loopLine(yield* stopLoop(ctx, sessionId)),

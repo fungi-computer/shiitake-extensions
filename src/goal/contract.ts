@@ -68,9 +68,12 @@ export const EndedGoal = Schema.Struct({
   sequence: Schema.Int.check(Schema.isGreaterThan(0)),
   /** Objective that finished or was cleared. */
   objective: Objective,
-  /** Whether the model achieved the goal or a person cleared it. */
+  /** Whether the model achieved the goal or it was cleared. */
   outcome: Schema.Literals(["achieved", "cleared"]),
-  /** The model's evidence for an achieved goal; null when cleared. */
+  /**
+   * The model's evidence for an achieved goal, or its explanation for
+   * clearing its own paused goal; null when a person cleared it.
+   */
   reason: Schema.NullOr(GoalReason),
   /** Completion time in epoch milliseconds. */
   endedAt: EpochMillis,
@@ -102,7 +105,15 @@ export const GoalCommandInput = Schema.Union([
   }),
   Schema.Struct({
     /** Select an existing-goal control. */
-    action: Schema.Literals(["pause", "resume", "replace", "clear"]),
+    action: Schema.Literals([
+      "pause",
+      "resume",
+      "replace",
+      "clear",
+      "clear-ask",
+    ]),
+    /** The human's answer to "clear this goal?"; absent for a typed clear. */
+    confirmed: Schema.optional(Schema.Boolean),
   }),
   Schema.Struct({}),
 ]);

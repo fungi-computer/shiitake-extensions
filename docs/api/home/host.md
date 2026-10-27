@@ -44,11 +44,12 @@ Agent-scope choice with per-run tools and prompt over one captured table.
 
 #### Parameters
 
-| Parameter                | Type                                                                                                                                              |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `options`                | \{ `computers`: \{ `read`: (`context`) => readonly `Readonly`\<\{ `name`: `string`; `attachmentId`: `string`; `port`: `FilesPort`; \}\>[]; \}; \} |
-| `options.computers`      | \{ `read`: (`context`) => readonly `Readonly`\<\{ `name`: `string`; `attachmentId`: `string`; `port`: `FilesPort`; \}\>[]; \}                     |
-| `options.computers.read` | (`context`) => readonly `Readonly`\<\{ `name`: `string`; `attachmentId`: `string`; `port`: `FilesPort`; \}\>[]                                    |
+| Parameter                    | Type                                                                                                                                                                                              | Description                                                    |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `options`                    | \{ `computers`: \{ `read`: (`context`) => readonly `Readonly`\<\{ `name`: `string`; `attachmentId`: `string`; `port`: `FilesPort`; \}\>[]; `prepare?`: (`context`) => `Promise`\<`void`\>; \}; \} | -                                                              |
+| `options.computers`          | \{ `read`: (`context`) => readonly `Readonly`\<\{ `name`: `string`; `attachmentId`: `string`; `port`: `FilesPort`; \}\>[]; `prepare?`: (`context`) => `Promise`\<`void`\>; \}                     | -                                                              |
+| `options.computers.read`     | (`context`) => readonly `Readonly`\<\{ `name`: `string`; `attachmentId`: `string`; `port`: `FilesPort`; \}\>[]                                                                                    | Read the table inside the synchronous Home choice transaction. |
+| `options.computers.prepare?` | (`context`) => `Promise`\<`void`\>                                                                                                                                                                | Optional host preparation before run-scoped Files capture.     |
 
 #### Returns
 

@@ -15,6 +15,7 @@ import * as Schema from "effect/Schema";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import Papa from "papaparse";
+import { titleLimit } from "../internal/headline.js";
 import { ask, catalog, done, freshRequestId } from "../internal/catalog.js";
 import {
   questionContract,
@@ -863,15 +864,51 @@ function singleSelection(
     : Effect.succeed([option.label]);
 }
 
+/**
+ * The Agent's own words are the title only when they fit one; a longer
+ * question gets a plain title and sits in the body, whole in the details.
+ */
+function questionHeading(question: AskRow["questions"][number]) {
+  const text = question.question.replace(/\s+/gu, " ").trim();
+  if (text.length <= titleLimit) return { message: text };
+  return {
+    message: "The Agent has a question",
+    body: question.question.slice(0, 4_000),
+    bodyLabel: "Question",
+    details: [{ label: "Question", value: question.question.slice(0, 4_000) }],
+  };
+}
+
 function promptQuestion(
   nextQuestion: AskRow["questions"][number],
   next: FlowDraft,
 ) {
+  const heading = questionHeading(nextQuestion);
   if (nextQuestion.multiple === true)
     return ask(
       {
         type: "text",
-        message: `${nextQuestion.question}\n${nextQuestion.options.map((option) => `${Papa.unparse([[option.label]])}: ${option.description}`).join("\n")}\nEnter selected labels as a comma list (quote labels containing commas), or leave blank for free text.`,
+        ...heading,
+        summary: `Separate your picks with commas, or leave blank to write your own.${
+          nextQuestion.options.some((option) => option.label.includes(","))
+            ? " Put quotes around a pick that contains a comma."
+            : ""
+        }`,
+        facts: [
+          {
+            label: "Options",
+            value: nextQuestion.options
+              .map((option) => option.label)
+              .join(" · "),
+          },
+        ],
+        details: [
+          ...("details" in heading ? heading.details : []),
+          ...nextQuestion.options.map((option) => ({
+            label: option.label.slice(0, 200),
+            value: option.description,
+          })),
+        ].slice(0, 24),
       },
       { stage: "multiple", ...next },
       "selection",
@@ -879,7 +916,7 @@ function promptQuestion(
   return ask(
     {
       type: "choice",
-      message: nextQuestion.question,
+      ...heading,
       options: [
         ...nextQuestion.options.map((option) => ({
           value: `option:${option.label}`,

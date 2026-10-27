@@ -5,13 +5,18 @@ import { almanacExtension } from "./almanac/host.js";
 import { questionContract } from "./question/contract.js";
 import { questionExtension } from "./question/host.js";
 import { goalContract } from "./goal/contract.js";
-import { goalExtension } from "./goal/host.js";
+import { goalExtension, goalExtensionFor } from "./goal/host.js";
 import { loopContract } from "./loop/contract.js";
 import { loopExtension } from "./loop/host.js";
 import { planContract } from "./plan/contract.js";
 import { planExtension } from "./plan/host.js";
 import { skillsExtension, skillsGrant } from "./skills/host.js";
 import type { SkillSource } from "./skills/source.js";
+import {
+  subagentsExtension,
+  subagentsGrant,
+  type SubagentSource,
+} from "./subagents/host.js";
 
 /**
  * Botanical's product roster with explicit grants. Hub and Local pass this
@@ -46,6 +51,7 @@ export const botanicalAgentExtensions: ExtensionRosterV0 = Object.freeze({
         "state",
         "settled",
         "send",
+        "timers",
         "commands",
         "projection",
         "run_tools",
@@ -76,6 +82,28 @@ export const botanicalAgentExtensions: ExtensionRosterV0 = Object.freeze({
     },
   ] as const),
 });
+
+/** Compose the goal and footer over one source; an absent goal is a wiring error. */
+export function botanicalExtensionsWithSubagents(
+  base: ExtensionRosterV0,
+  source: SubagentSource,
+): ExtensionRosterV0 {
+  if (
+    !base.roster.some((extension) => extension.manifest.id === goalContract.id)
+  )
+    throw new Error("Cannot attach sub-agents without the goal extension");
+  return {
+    roster: [
+      ...base.roster.map((extension) =>
+        extension.manifest.id === goalContract.id
+          ? goalExtensionFor(source)
+          : extension,
+      ),
+      subagentsExtension({ source }),
+    ],
+    grants: [...base.grants, subagentsGrant],
+  };
+}
 
 /** A host with a SkillSource grants read-only skill discovery for its own runs. */
 export function botanicalExtensionsWithSkills(

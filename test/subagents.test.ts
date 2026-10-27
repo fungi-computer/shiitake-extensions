@@ -35,6 +35,12 @@ function childAccess(host: Host): SubagentAgent {
     listSessions: (after) => run(host.agent.listSessions(after)),
     session: (sessionId) => ({
       read: (input) => run(host.agent.session(sessionId).read(input)),
+      readSettlement: (commandId, input) =>
+        run(
+          host.agent
+            .session(sessionId)
+            .readSettlement(commandId, input?.timeoutMs),
+        ),
     }),
   };
 }
@@ -94,6 +100,7 @@ async function parentWith(
   opened: { count: number } = { count: 0 },
 ) {
   const source: SubagentSource = {
+    hasLiveChildCommand: () => false,
     read: (sessionId, limit) =>
       Promise.resolve({
         agents: (records[sessionId] ?? []).slice(0, limit),

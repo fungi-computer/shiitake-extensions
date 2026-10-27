@@ -135,15 +135,25 @@ export function homeExtension(options: {
                     message:
                       "No Computers attached. Attach one before choosing Home.",
                   });
+                const recorded = Option.getOrNull(
+                  yield* ctx.state.choice.get("default"),
+                );
+                const home = computers.find(
+                  ({ attachmentId }) => attachmentId === recorded?.attachmentId,
+                );
+                const prompt = {
+                  type: "choice",
+                  message: "Choose a Home Computer",
+                  summary: "The Agent reads and edits files here by default.",
+                  options: computers.map(({ name }) => ({
+                    value: name,
+                    label: name,
+                  })),
+                } as const;
                 return ask(
-                  {
-                    type: "choice",
-                    message: "Choose this Agent's Home Computer",
-                    options: computers.map(({ name }) => ({
-                      value: name,
-                      label: name,
-                    })),
-                  },
+                  home === undefined
+                    ? prompt
+                    : { ...prompt, current: home.name },
                   {},
                   "name",
                 );

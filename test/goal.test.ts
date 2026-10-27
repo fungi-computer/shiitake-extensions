@@ -12,10 +12,11 @@ import * as Effect from "effect/Effect";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 
 import { goalContract } from "../src/goal/contract.js";
-import { goalExtension } from "../src/goal/host.js";
+import { goalExtension, goalExtensionFor } from "../src/goal/host.js";
+import type { SubagentSource } from "../src/subagents/host.js";
 import { grantAll, openAgent, sqliteOwner } from "./fixtures/host.js";
 
 /** The goal tool inputs this test sends through the sandbox bindings. */
@@ -45,10 +46,13 @@ function scriptedModel(
 async function openGoal(
   overrides: Parameters<typeof openAgent>[2] = {},
   store = sqliteOwner(),
+  subagents?: SubagentSource,
 ) {
   const host = await openAgent(
     store.owner,
-    grantAll([goalExtension]),
+    grantAll([
+      subagents === undefined ? goalExtension : goalExtensionFor(subagents),
+    ]),
     overrides,
   );
   const session = host.session("garden");
@@ -759,6 +763,587 @@ it("pauses after three tool-free continuations and human resume resets the stall
   }
 });
 
+it("completes a stalled goal from its own Agent's later command", async () => {
+  const attempts: string[] = [];
+  const host = await openGoal({
+    tools: {
+      modules: [],
+      sources: [],
+      sandbox: fromTypedSandbox({
+        execute: async (request: SandboxRequest) => {
+          const update = request.bindings.goal?.update_goal;
+          if (update === undefined) throw new Error("goal tools are missing");
+          try {
+            const result = await update({
+              status: "complete",
+              reason: "Verified every requirement",
+            });
+            attempts.push(JSON.stringify(result));
+            return result;
+          } catch (error) {
+            attempts.push(
+              error instanceof Error ? error.message : String(error),
+            );
+            throw error;
+          }
+        },
+      }),
+    },
+    model: scriptedModel([
+      fauxAssistantMessage("first reply"),
+      fauxAssistantMessage("waiting"),
+      fauxAssistantMessage("waiting"),
+      fauxAssistantMessage("waiting"),
+      fauxAssistantMessage(fauxToolCall("execute", { code: "finish" }), {
+        stopReason: "toolUse",
+      }),
+      fauxAssistantMessage("done"),
+    ]),
+  });
+  try {
+    await host.goal.call("set", {
+      objective: "Finish the fern",
+      expectedRevision: null,
+      requestId: "stalled-first-command",
+    });
+    await host.drain();
+    await expectPausedAttention(
+      host,
+      "Goal paused: Finish the fern (Stalled: no progress for 3 turns)",
+      "goal-stalled",
+    );
+    await Effect.runPromise(
+      host.agent.session("garden").send("Finished; close your goal", {
+        delivery: "followUp",
+        requestId: "later-command",
+      }),
+    );
+    await host.drain();
+    expect(attempts).toEqual([
+      JSON.stringify({
+        objective: "Finish the fern",
+        state: "complete",
+        reason: "Verified every requirement",
+      }),
+    ]);
+    expect(await host.view()).toMatchObject({
+      value: {
+        goal: null,
+        ended: [{ outcome: "achieved", reason: "Verified every requirement" }],
+      },
+    });
+  } finally {
+    await host.dispose();
+  }
+});
+
+/** A sandbox whose every execute sends one update_goal and records the outcome. */
+function updateEveryExecute(
+  input: GoalToolInput,
+  outcomes: string[],
+): NonNullable<NonNullable<Parameters<typeof openGoal>[0]>["tools"]> {
+  return {
+    modules: [],
+    sources: [],
+    sandbox: fromTypedSandbox({
+      execute: async (request: SandboxRequest) => {
+        const update = request.bindings.goal?.update_goal;
+        if (update === undefined) throw new Error("goal tools are missing");
+        try {
+          const result = await update(input);
+          outcomes.push(JSON.stringify(result));
+          return result;
+        } catch (error) {
+          outcomes.push(error instanceof Error ? error.message : String(error));
+          throw error;
+        }
+      },
+    }),
+  };
+}
+
+it("lets an Agent resume its own stalled goal, which admits the next goal turn", async () => {
+  const outcomes: string[] = [];
+  const host = await openGoal({
+    tools: updateEveryExecute(
+      { status: "resume", reason: "The builder reported back" },
+      outcomes,
+    ),
+    model: scriptedModel([
+      fauxAssistantMessage("first reply"),
+      ...Array.from({ length: 3 }, () => fauxAssistantMessage("waiting")),
+      fauxAssistantMessage(fauxToolCall("execute", { code: "resume" }), {
+        stopReason: "toolUse",
+      }),
+      fauxAssistantMessage("resumed"),
+      ...Array.from({ length: 3 }, () => fauxAssistantMessage("waiting")),
+    ]),
+  });
+  try {
+    await host.goal.call("set", {
+      objective: "Integrate the lanes",
+      expectedRevision: null,
+      requestId: "self-resume",
+    });
+    await host.drain();
+    expect(await host.commands()).toBe(4);
+    await expectPausedAttention(
+      host,
+      "Goal paused: Integrate the lanes (Stalled: no progress for 3 turns)",
+      "goal-stalled",
+    );
+    await Effect.runPromise(
+      host.agent.session("garden").send("Builder: READY", {
+        delivery: "followUp",
+        requestId: "builder-ready",
+      }),
+    );
+    await host.drain();
+    expect(outcomes).toEqual([
+      JSON.stringify({
+        objective: "Integrate the lanes",
+        state: "active",
+        reason: "The builder reported back",
+      }),
+    ]);
+    // The resumed goal ran three more goal turns of its own, then the
+    // ordinary stall guard paused it again.
+    expect(await host.commands()).toBe(8);
+    await expectPausedAttention(
+      host,
+      "Goal paused: Integrate the lanes (Stalled: no progress for 3 turns)",
+      "goal-stalled",
+    );
+  } finally {
+    await host.dispose();
+  }
+});
+
+it("refuses an Agent's resume of a goal a person paused", async () => {
+  const outcomes: string[] = [];
+  const host = await openGoal({
+    tools: updateEveryExecute(
+      { status: "resume", reason: "I want to keep going" },
+      outcomes,
+    ),
+    model: scriptedModel([
+      fauxAssistantMessage("first reply"),
+      fauxAssistantMessage(fauxToolCall("execute", { code: "resume" }), {
+        stopReason: "toolUse",
+      }),
+      fauxAssistantMessage("still paused"),
+    ]),
+  });
+  try {
+    await host.goal.call("set", {
+      objective: "Hold for review",
+      expectedRevision: null,
+      requestId: "person-held",
+    });
+    await host.goal.call("pause", {});
+    await host.drain();
+    await Effect.runPromise(
+      host.agent.session("garden").send("Please continue", {
+        delivery: "followUp",
+        requestId: "continue-please",
+      }),
+    );
+    await host.drain();
+    expect(outcomes).toEqual([
+      "A person paused or stopped this goal; only complete is available to you",
+    ]);
+    expect(await host.view()).toMatchObject({
+      value: { goal: { state: "paused", pauseCause: { kind: "person" } } },
+    });
+  } finally {
+    await host.dispose();
+  }
+});
+
+it("rechecks a waiting goal on its timer and continues once the child command settles", async () => {
+  const startAt = Date.parse("2026-10-26T12:00:00.000Z");
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(startAt);
+  let live = true;
+  const subagents: SubagentSource = {
+    hasLiveChildCommand: () => live,
+    read: () => Promise.resolve({ agents: [], more: 0 }),
+    open: () => Promise.reject(new Error("No child read in settlement")),
+  };
+  const host = await openGoal({}, sqliteOwner(), subagents);
+  try {
+    await host.goal.call("set", {
+      objective: "Land the builder's work",
+      expectedRevision: null,
+      requestId: "timer-wait",
+    });
+    await host.drain();
+    expect(await host.commands()).toBe(1);
+    expect(await host.pendingWork()).toEqual({
+      pending: false,
+      nextWakeAt: startAt + 60_000,
+    });
+    // Still live at the first check: the goal keeps waiting and re-arms.
+    vi.setSystemTime(startAt + 60_000);
+    await host.drain();
+    expect(await host.commands()).toBe(1);
+    expect((await host.session("garden").read()).attention).toEqual([
+      expect.objectContaining({ kind: "goal-waiting" }),
+    ]);
+    // The child settled without mailing back: the next check continues.
+    live = false;
+    vi.setSystemTime(startAt + 120_000);
+    await host.drain();
+    expect(await host.commands()).toBe(4);
+    await expectPausedAttention(
+      host,
+      "Goal paused: Land the builder's work (Stalled: no progress for 3 turns)",
+      "goal-stalled",
+    );
+  } finally {
+    await host.dispose();
+    vi.useRealTimers();
+  }
+});
+
+it("rejects an old run's update after a goal is replaced", async () => {
+  let entered = false;
+  let release: () => void = () => undefined;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const rejected: string[] = [];
+  const host = await openGoal({
+    tools: {
+      modules: [],
+      sources: [],
+      sandbox: fromTypedSandbox({
+        execute: async (request: SandboxRequest) => {
+          const update = request.bindings.goal?.update_goal;
+          if (update === undefined) throw new Error("goal tools are missing");
+          entered = true;
+          await held;
+          try {
+            return await update({ status: "complete", reason: "Old run" });
+          } catch (error) {
+            rejected.push(
+              error instanceof Error ? error.message : String(error),
+            );
+            throw error;
+          }
+        },
+      }),
+    },
+    model: scriptedModel([
+      fauxAssistantMessage("starting"),
+      fauxAssistantMessage(fauxToolCall("execute", { code: "finish" }), {
+        stopReason: "toolUse",
+      }),
+      fauxAssistantMessage("old result"),
+      fauxAssistantMessage("new result"),
+    ]),
+  });
+  let running: Promise<void> | undefined;
+  try {
+    const first = await host.goal.call("set", {
+      objective: "First task",
+      expectedRevision: null,
+      requestId: "first-task",
+    });
+    await host.reconcile();
+    running = host.reconcile();
+    await expect.poll(() => entered).toBe(true);
+    await host.goal.call("set", {
+      objective: "New task",
+      expectedRevision: first.goal.revision,
+      requestId: "replacement-task",
+    });
+    release();
+    await running;
+    expect(rejected).toEqual(["Session goal work guard is stale"]);
+    expect(await host.view()).toMatchObject({
+      value: { goal: { objective: "New task" } },
+    });
+  } finally {
+    release();
+    await running;
+    await host.dispose();
+  }
+});
+
+it("waits visibly only for live child commands and resumes the ordinary stall guard after settlement", async () => {
+  let live = true;
+  const subagents: SubagentSource = {
+    hasLiveChildCommand: () => live,
+    read: () =>
+      Promise.resolve({
+        agents: [{ agentId: "child", name: "Child", sessionId: "child-work" }],
+        more: 0,
+      }),
+    open: () =>
+      Promise.reject(
+        new Error("Progress lookup must not cross the settlement transaction"),
+      ),
+  };
+  const host = await openGoal({}, sqliteOwner(), subagents);
+  try {
+    await host.goal.call("set", {
+      objective: "Review the child work",
+      expectedRevision: null,
+      requestId: "delegated-goal",
+    });
+    await host.drain();
+    expect(await host.view()).toMatchObject({
+      value: { goal: { state: "active" } },
+    });
+    expect(await host.commands()).toBe(1);
+    expect((await host.session("garden").read()).attention).toEqual([
+      expect.objectContaining({ kind: "goal-waiting", inbox: false }),
+    ]);
+    live = false;
+    await Effect.runPromise(
+      host.agent.session("garden").send("Child has reported progress", {
+        requestId: "child-progress",
+        delivery: "followUp",
+      }),
+    );
+    await host.drain();
+    expect(await host.commands()).toBe(5);
+    expect(await host.view()).toMatchObject({
+      value: { goal: { state: "paused" } },
+    });
+    await expectPausedAttention(
+      host,
+      "Goal paused: Review the child work (Stalled: no progress for 3 turns)",
+      "goal-stalled",
+    );
+  } finally {
+    await host.dispose();
+  }
+});
+
+it("continues parent goal work after a tool-using turn even while child work is live", async () => {
+  const subagents: SubagentSource = {
+    hasLiveChildCommand: () => true,
+    read: () => Promise.resolve({ agents: [], more: 0 }),
+    open: () =>
+      Promise.reject(new Error("No child read belongs in settlement")),
+  };
+  const host = await openGoal(
+    {
+      tools: {
+        modules: [],
+        sources: [],
+        sandbox: fromTypedSandbox({
+          execute: () => Promise.resolve({ content: [] }),
+        }),
+      },
+      model: scriptedModel([
+        fauxAssistantMessage(fauxToolCall("execute", { code: "progress" }), {
+          stopReason: "toolUse",
+        }),
+        fauxAssistantMessage("Parent made progress"),
+      ]),
+    },
+    sqliteOwner(),
+    subagents,
+  );
+  try {
+    await host.goal.call("set", {
+      objective: "Land parent work",
+      expectedRevision: null,
+      requestId: "parent-progress",
+    });
+    await host.reconcile();
+    expect(await host.commands()).toBe(2);
+    expect((await host.session("garden").read()).attention).toEqual([]);
+  } finally {
+    await host.dispose();
+  }
+});
+
+it("lets an Agent clear its own stalled goal with a reason; a person's clear records none", async () => {
+  const cleared: unknown[] = [];
+  const host = await openGoal({
+    tools: {
+      modules: [],
+      sources: [],
+      sandbox: fromTypedSandbox({
+        execute: async (request: SandboxRequest) => {
+          const update = request.bindings.goal?.update_goal;
+          if (update === undefined) throw new Error("goal tools are missing");
+          const result = await update({
+            status: "clear",
+            reason: "The lane landed elsewhere",
+          });
+          cleared.push(result);
+          return result;
+        },
+      }),
+    },
+    model: scriptedModel([
+      ...Array.from({ length: 4 }, () => fauxAssistantMessage("waiting")),
+      fauxAssistantMessage(fauxToolCall("execute", { code: "clear" }), {
+        stopReason: "toolUse",
+      }),
+      fauxAssistantMessage("cleared"),
+      ...Array.from({ length: 4 }, () => fauxAssistantMessage("waiting")),
+    ]),
+  });
+  try {
+    await host.goal.call("set", {
+      objective: "First child task",
+      expectedRevision: null,
+      requestId: "first-child-task",
+    });
+    await host.drain();
+    await Effect.runPromise(
+      host.agent.session("garden").send("Clear the paused goal", {
+        requestId: "child-clear-command",
+        delivery: "followUp",
+      }),
+    );
+    await host.drain();
+    expect(cleared).toEqual([
+      {
+        objective: "First child task",
+        state: "cleared",
+        reason: "The lane landed elsewhere",
+      },
+    ]);
+    expect(await host.view()).toMatchObject({
+      value: {
+        goal: null,
+        ended: [{ outcome: "cleared", reason: "The lane landed elsewhere" }],
+      },
+    });
+    // The Session control is the person's command, not the child's model tool.
+    await host.goal.call("set", {
+      objective: "Second child task",
+      expectedRevision: null,
+      requestId: "second-child-task",
+    });
+    await host.drain();
+    await expectPausedAttention(
+      host,
+      "Goal paused: Second child task (Stalled: no progress for 3 turns)",
+      "goal-stalled",
+    );
+    await host.goal.call("clear", {});
+    expect(await host.view()).toMatchObject({
+      value: {
+        goal: null,
+        ended: [
+          { outcome: "cleared", reason: "The lane landed elsewhere" },
+          { outcome: "cleared", reason: null },
+        ],
+      },
+    });
+  } finally {
+    await host.dispose();
+  }
+});
+
+it("refuses a model's clear on an active person-set goal", async () => {
+  const errors: string[] = [];
+  const host = await openGoal({
+    tools: {
+      modules: [],
+      sources: [],
+      sandbox: fromTypedSandbox({
+        execute: async (request: SandboxRequest) => {
+          try {
+            await request.bindings.goal?.update_goal?.({
+              status: "clear",
+              reason: "Giving up",
+            });
+          } catch (cause) {
+            errors.push(cause instanceof Error ? cause.message : String(cause));
+          }
+          return { content: [] };
+        },
+      }),
+    },
+    model: scriptedModel([
+      fauxAssistantMessage(fauxToolCall("execute", { code: "clear" }), {
+        stopReason: "toolUse",
+      }),
+      fauxAssistantMessage("I cannot clear an active goal"),
+      ...Array.from({ length: 3 }, () => fauxAssistantMessage("waiting")),
+    ]),
+  });
+  try {
+    await host.goal.call("set", {
+      objective: "Keep tending",
+      expectedRevision: null,
+      requestId: "live-goal",
+    });
+    await host.drain();
+    expect(errors).toEqual(["Only a paused Session goal can be cleared"]);
+    expect(await host.view()).toMatchObject({
+      value: { ended: [], goal: { objective: "Keep tending" } },
+    });
+  } finally {
+    await host.dispose();
+  }
+});
+
+it("keeps a person's pause human-held and distinguishes an absent goal for model updates", async () => {
+  const errors: string[] = [];
+  const host = await openGoal({
+    tools: {
+      modules: [],
+      sources: [],
+      sandbox: fromTypedSandbox({
+        execute: async (request: SandboxRequest) => {
+          try {
+            await request.bindings.goal?.update_goal?.({
+              status: "blocked",
+              reason: "External blocker",
+            });
+          } catch (cause) {
+            errors.push(cause instanceof Error ? cause.message : String(cause));
+          }
+          return { content: [] };
+        },
+      }),
+    },
+    model: scriptedModel([
+      fauxAssistantMessage(fauxToolCall("execute", { code: "block" }), {
+        stopReason: "toolUse",
+      }),
+      fauxAssistantMessage("Still paused"),
+      fauxAssistantMessage(fauxToolCall("execute", { code: "block" }), {
+        stopReason: "toolUse",
+      }),
+      fauxAssistantMessage("No goal"),
+    ]),
+  });
+  try {
+    await host.goal.call("set", {
+      objective: "Wait",
+      expectedRevision: null,
+      requestId: "diagnostic-goal",
+    });
+    await host.goal.call("pause", {});
+    await host.drain();
+    await host.goal.call("clear", {});
+    await Effect.runPromise(
+      host.agent.session("garden").send("Check the goal", {
+        requestId: "diagnostic-follow-up",
+        delivery: "followUp",
+      }),
+    );
+    await host.drain();
+    expect(errors).toEqual([
+      "A person paused or stopped this goal; only complete is available to you",
+      "No Session goal",
+    ]);
+  } finally {
+    await host.dispose();
+  }
+});
+
 it("R3 a cleared goal is history, never current, and admits no further work", async () => {
   const host = await openGoal();
   try {
@@ -1067,8 +1652,12 @@ it("R7 the replace prompt appears only for a live or paused goal, never for a fi
       type: "prompt",
       prompt: {
         type: "confirmation",
-        message:
-          "Replace the live goal?\nCurrent: Tidy the menus\nNew: Write the release notes",
+        message: "Replace the live goal?",
+        destructive: true,
+        facts: [
+          { label: "Current", value: "Tidy the menus" },
+          { label: "New", value: "Write the release notes" },
+        ],
       },
     });
     await host.goal.call("pause", {});
@@ -1076,8 +1665,8 @@ it("R7 the replace prompt appears only for a live or paused goal, never for a fi
       type: "prompt",
       prompt: {
         type: "confirmation",
-        message:
-          "Replace the paused goal?\nCurrent: Tidy the menus\nNew: Write the release notes",
+        message: "Replace the paused goal?",
+        destructive: true,
       },
     });
     // Clearing finishes the goal; the next goal starts without asking.
@@ -1336,5 +1925,77 @@ it("R1 restart: the resumed turn may still report the goal complete", async () =
   } finally {
     await reopened.dispose();
     rmSync(directory, { recursive: true });
+  }
+});
+
+it("the menu's Clear asks first and Keep leaves the goal in place", async () => {
+  const host = await openGoal();
+  try {
+    await host.goal.call("goal", {
+      action: "set",
+      objective: "Tidy the menus",
+      requestId: "first",
+    });
+    await host.goal.call("pause", {});
+    expect(await host.goal.call("goal", { action: "clear-ask" })).toMatchObject(
+      {
+        type: "prompt",
+        prompt: { type: "confirmation", destructive: true },
+      },
+    );
+    expect(
+      await host.goal.call("goal", { action: "clear", confirmed: false }),
+    ).toMatchObject({ type: "done" });
+    expect(await host.view()).toMatchObject({
+      value: {
+        goal: { objective: "Tidy the menus", state: "paused" },
+        ended: [],
+      },
+    });
+    expect(
+      await host.goal.call("goal", { action: "clear", confirmed: true }),
+    ).toEqual({ type: "done" });
+    expect(await host.view()).toMatchObject({ value: { goal: null } });
+  } finally {
+    await host.dispose();
+  }
+});
+
+it("the menu's Replace asks for the new goal and then asks a destructive confirmation", async () => {
+  const host = await openGoal();
+  try {
+    await host.goal.call("goal", {
+      action: "set",
+      objective: "Tidy the menus",
+      requestId: "first",
+    });
+    await host.goal.call("pause", {});
+    const objective = await host.goal.call("goal", { action: "replace" });
+    expect(objective).toMatchObject({
+      type: "prompt",
+      prompt: { type: "text" },
+      next: { answer: "objective" },
+    });
+    if (objective.type !== "prompt") throw new Error("expected a prompt");
+    expect(objective.next.arguments).not.toHaveProperty("confirmed");
+    expect(
+      await host.goal.call("goal", {
+        ...objective.next.arguments,
+        objective: "Write the release notes",
+      }),
+    ).toMatchObject({
+      type: "prompt",
+      prompt: {
+        type: "confirmation",
+        message: "Replace the paused goal?",
+        destructive: true,
+      },
+      next: { answer: "confirmed" },
+    });
+    expect(await host.view()).toMatchObject({
+      value: { goal: { objective: "Tidy the menus", state: "paused" } },
+    });
+  } finally {
+    await host.dispose();
   }
 });

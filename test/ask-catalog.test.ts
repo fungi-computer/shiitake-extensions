@@ -135,6 +135,17 @@ it("collects quoted multiple selections and free text across every question", as
       "choice",
       "text",
     ]);
+    // The options are shown as a list, never pasted into the title.
+    expect(prompts[0]).toEqual({
+      type: "text",
+      message: "Which deliverables should ship?",
+      summary: `Separate your picks with commas, or leave blank to write your own. Put quotes around a pick that contains a comma.`,
+      facts: [{ label: "Options", value: "Docs, examples · Tests" }],
+      details: [
+        { label: "Docs, examples", value: "Explain usage." },
+        { label: "Tests", value: "Verify behavior." },
+      ],
+    });
     expect(notices).toEqual(["Answer sent."]);
     const snapshot = await fixture.host.session("questions").read();
     expect(snapshot.attention).toEqual([]);
@@ -231,3 +242,35 @@ it.each(["SQLite,SQLite", "Unknown", '"SQLite', "SQLite\nPostgreSQL"])(
     }
   },
 );
+
+it("a long Agent question gets a plain title and sits in the body", async () => {
+  const long = `Which of these storage engines should hold the notes, given that they must survive a restart and be searchable? ${"Think about it. ".repeat(20)}`;
+  const fixture = await questionHost({
+    mode: "continue",
+    questions: [
+      {
+        id: "storage",
+        header: "Storage",
+        question: long,
+        options: [
+          { label: "SQLite", description: "One file." },
+          { label: "PostgreSQL", description: "A server." },
+        ],
+      },
+    ],
+  });
+  try {
+    await fixture.park();
+    const { prompts } = await answerThroughCatalog(fixture, ["option:SQLite"]);
+    expect(prompts[0]).toMatchObject({
+      type: "choice",
+      message: "The Agent has a question",
+      bodyLabel: "Question",
+      body: long,
+      details: [{ label: "Question", value: long }],
+    });
+  } finally {
+    await fixture.host.close();
+    fixture.store.close();
+  }
+});

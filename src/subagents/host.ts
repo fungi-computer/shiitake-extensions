@@ -29,12 +29,14 @@ export type SubagentRecord = Readonly<{
   sessionId: string | null;
 }>;
 
-/** The two owner reads a status needs from one child Agent. */
+/** Owner reads used for status and exact delegated command settlement. */
 export type SubagentAgent = Readonly<{
   /** Read the child's owner-ordered conversation summaries. */
   listSessions: ShiitakeAgent["listSessions"];
   /** Open the read-only view of a selected child conversation. */
-  session: (sessionId: string) => Pick<ShiitakeSession, "read">;
+  session: (
+    sessionId: string,
+  ) => Pick<ShiitakeSession, "read" | "readSettlement">;
 }>;
 
 /**
@@ -44,6 +46,8 @@ export type SubagentAgent = Readonly<{
  * `open` fits), and releasing it never stops the Agent's work.
  */
 export type SubagentSource = Readonly<{
+  /** A recorded accepted child command is still pending or running. Synchronous for settlement. */
+  hasLiveChildCommand: (sessionId: string) => boolean;
   /** Read a bounded list of this conversation's created Agents. */
   read: (
     sessionId: string,

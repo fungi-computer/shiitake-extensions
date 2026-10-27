@@ -7,6 +7,7 @@ import {
 } from "@fungi.computer/whistle";
 import { expect, it } from "vitest";
 
+import loopClient from "../src/loop/client.js";
 import { botanicalAgentExtensions } from "../src/roster.js";
 import { openAgent, sqliteOwner } from "./fixtures/host.js";
 
@@ -120,11 +121,11 @@ it("runs the /goal conversation on the server: ask, set, confirm a replacement",
     });
     expect(controls.asked[0]).toMatchObject({
       type: "choice",
-      message: "Pursuing goal: Plant moss",
+      message: "Working on: Plant moss",
       options: [
         { value: "pause", label: "Pause goal" },
-        { value: "clear", label: "Clear goal" },
-        { value: "replace", label: "Replace goal" },
+        { value: "replace", label: "Replace goal…" },
+        { value: "clear-ask", label: "Clear goal…", destructive: true },
       ],
     });
     expect(controls.notices).toEqual([]);
@@ -168,6 +169,99 @@ it("starts and controls /loop through typed text and words", async () => {
       status: "failed",
       error: { code: "interaction_required" },
     });
+  } finally {
+    await client.dispose();
+  }
+});
+
+it("the footer's stop loop asks first, and Keep leaves the loop running", async () => {
+  const client = await openAdvertisedClient();
+  try {
+    await client.runtime.execute("botanical-session-loop:loop", {
+      origin: "slash",
+      arguments: { action: "start", text: "5m check CI", requestId: "f1" },
+      interaction: answering([]).interaction,
+    });
+    // The very action the loop's client advertises as its footer stop.
+    const slot = (await client.session.read()).extensions[
+      "botanical-session-loop"
+    ];
+    if (slot?.status !== "running" || loopClient.contribute === undefined)
+      throw new Error("The loop slot is not running");
+    const advertised = loopClient.contribute(slot).waiting?.cancel;
+    if (advertised === undefined)
+      throw new Error("A scheduled loop advertises no footer stop");
+    expect(advertised.label).toBe("stop loop");
+
+    const kept = answering([false]);
+    await client.runtime.execute("botanical-session-loop:loop", {
+      origin: "menu",
+      arguments: advertised.input,
+      interaction: kept.interaction,
+    });
+    expect(kept.asked).toMatchObject([
+      {
+        type: "confirmation",
+        message: "Stop this loop?",
+        cancelLabel: "Keep loop",
+        confirmLabel: "Stop loop",
+        destructive: true,
+      },
+    ]);
+    expect(kept.notices).toEqual(["Kept the loop."]);
+    const status = answering([]);
+    await client.runtime.execute("botanical-session-loop:loop", {
+      origin: "slash",
+      arguments: { action: "status" },
+      interaction: status.interaction,
+    });
+    expect(status.notices[0]).toMatch(/^Loop active/u);
+  } finally {
+    await client.dispose();
+  }
+});
+
+it("/loop stops only after a safe-first confirmation", async () => {
+  const client = await openAdvertisedClient();
+  try {
+    const prompt = `Check CI and fix what broke. ${"Then wait and look again. ".repeat(6)}`;
+    await client.runtime.execute("botanical-session-loop:loop", {
+      origin: "slash",
+      arguments: { action: "start", text: prompt, requestId: "s1" },
+      interaction: answering([]).interaction,
+    });
+
+    // The menu's Stop only asks; the loop keeps running until the answer is yes.
+    const kept = answering(["stop-ask", false]);
+    await client.runtime.execute("botanical-session-loop:loop", {
+      origin: "slash",
+      interaction: kept.interaction,
+    });
+    expect(kept.asked[0]).toMatchObject({
+      type: "choice",
+      message: "Loop running: Check CI and fix what broke",
+      summary: "The Agent decides when to run it again.",
+      options: [
+        { value: "pause", label: "Pause loop" },
+        { value: "stop-ask", label: "Stop loop…", destructive: true },
+      ],
+    });
+    expect(kept.asked[1]).toMatchObject({
+      type: "confirmation",
+      message: "Stop this loop?",
+      cancelLabel: "Keep loop",
+      confirmLabel: "Stop loop",
+      destructive: true,
+    });
+    expect(kept.notices).toEqual(["Kept the loop."]);
+
+    const stopped = answering(["stop-ask", true]);
+    await client.runtime.execute("botanical-session-loop:loop", {
+      origin: "slash",
+      interaction: stopped.interaction,
+    });
+    expect(stopped.notices).toHaveLength(1);
+    expect(stopped.notices[0]).toMatch(/^Loop cancelled/u);
   } finally {
     await client.dispose();
   }

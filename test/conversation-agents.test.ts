@@ -10,7 +10,7 @@ import {
 } from "../src/roster/conversation-agents.js";
 import { botanicalAgentExtensions } from "../src/roster.js";
 import { subagentsGrant } from "../src/subagents/host.js";
-import { sqliteOwner } from "./fixtures/host.js";
+import { openAgent, run, sqliteOwner } from "./fixtures/host.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -49,6 +49,9 @@ it("records accepted create/send once and reads the same footer after reconstruc
     const signal = new AbortController().signal;
     await recorded.create({ requestId: "create" }, signal);
     await recorded.create({ requestId: "create" }, signal);
+    expect(conversations.source(host).hasLiveChildCommand("parent")).toBe(
+      false,
+    );
     expect(await conversations.source(host).read("parent", 10)).toEqual({
       agents: [{ agentId: "child", name: "Child", sessionId: null }],
       more: 0,
@@ -65,6 +68,8 @@ it("records accepted create/send once and reads the same footer after reconstruc
       signal,
     );
     const reopened = createConversationAgents(fixture.owner).source(host);
+    await expect.poll(() => reopened.hasLiveChildCommand("parent")).toBe(false);
+    expect(reopened.hasLiveChildCommand("another-parent")).toBe(false);
     expect(await reopened.read("parent", 10)).toEqual({
       agents: [{ agentId: "child", name: "Child", sessionId: "child-session" }],
       more: 0,
@@ -116,6 +121,149 @@ it("does not record refused create or send operations", async () => {
     ).rejects.toThrow("send refused");
     expect(await conversations.source(host).read("parent", 10)).toEqual({
       agents: [],
+      more: 0,
+    });
+  } finally {
+    fixture.close();
+  }
+});
+
+it("does not count relay-held mail as accepted delegated work", async () => {
+  const fixture = sqliteOwner();
+  try {
+    const conversations = createConversationAgents(fixture.owner);
+    const host: AgentControlDirectory = {
+      ...directory(),
+      send: () =>
+        Promise.resolve({
+          status: "held",
+          reason: "recipient_offline",
+          message: "waiting: recipient offline",
+        }),
+    };
+    const recorded = conversations.recording("parent", host);
+    if (recorded.send === undefined) throw new Error("Expected send door");
+    await recorded.send(
+      {
+        agentId: "child",
+        requestId: "held-work",
+        text: "work",
+        delivery: "followUp",
+      },
+      "parent",
+      new AbortController().signal,
+    );
+    expect(conversations.source(host).hasLiveChildCommand("parent")).toBe(
+      false,
+    );
+  } finally {
+    fixture.close();
+  }
+});
+
+it("tracks a recorded child command only until its owner's settlement is visible", async () => {
+  const fixture = sqliteOwner();
+  const childStore = sqliteOwner();
+  const child = await openAgent(childStore.owner, {
+    roster: [],
+    grants: [],
+  });
+  try {
+    const accepted = await run(
+      child.agent.session("child-session").send("work", {
+        requestId: "child-work",
+        delivery: "followUp",
+      }),
+    );
+    const host: AgentControlDirectory = {
+      ...directory(),
+      send: () => Promise.resolve(accepted),
+    };
+    const conversations = createConversationAgents(fixture.owner);
+    let reads = 0;
+    const source = conversations.source({
+      list: host.list,
+      open: () =>
+        Promise.resolve({
+          agent: {
+            listSessions: () => run(child.agent.listSessions()),
+            session: () => ({
+              read: (options) =>
+                run(child.agent.session("child-session").read(options)),
+              readSettlement: (commandId, options) => {
+                return run(
+                  child.agent
+                    .session("child-session")
+                    .readSettlement(commandId, options?.timeoutMs),
+                ).then((settlement) => {
+                  reads += 1;
+                  return settlement;
+                });
+              },
+            }),
+          },
+          release: () => Promise.resolve(),
+        }),
+    });
+    const recorded = conversations.recording("parent", host);
+    if (recorded.send === undefined) throw new Error("Expected send door");
+    await recorded.send(
+      {
+        agentId: "child",
+        sessionId: "child-session",
+        requestId: "child-work",
+        text: "work",
+        delivery: "followUp",
+      },
+      "parent",
+      new AbortController().signal,
+    );
+    expect(source.hasLiveChildCommand("parent")).toBe(true);
+    expect(source.hasLiveChildCommand("not-parent")).toBe(false);
+    await expect.poll(() => reads).toBeGreaterThanOrEqual(1);
+    expect(source.hasLiveChildCommand("parent")).toBe(true);
+    await child.drain();
+    await expect
+      .poll(() => source.hasLiveChildCommand("parent"), { timeout: 7_000 })
+      .toBe(false);
+  } finally {
+    await child.close();
+    childStore.close();
+    fixture.close();
+  }
+}, 10_000);
+
+it("uses the recipient's admitted Session when a delegated send omits one", async () => {
+  const fixture = sqliteOwner();
+  try {
+    const conversations = createConversationAgents(fixture.owner);
+    const host: AgentControlDirectory = {
+      ...directory(),
+      send: () =>
+        Promise.resolve({
+          status: "accepted",
+          commandId: "first-command",
+          sessionId: "recipient-session",
+        }),
+    };
+    const recorded = conversations.recording("parent", host);
+    if (recorded.send === undefined) throw new Error("Expected send door");
+    await recorded.send(
+      {
+        agentId: "child",
+        requestId: "first-send",
+        text: "work",
+        delivery: "followUp",
+      },
+      "parent",
+      new AbortController().signal,
+    );
+    const source = conversations.source(host);
+    await expect.poll(() => source.hasLiveChildCommand("parent")).toBe(false);
+    expect(await source.read("parent", 1)).toEqual({
+      agents: [
+        { agentId: "child", name: "Child", sessionId: "recipient-session" },
+      ],
       more: 0,
     });
   } finally {

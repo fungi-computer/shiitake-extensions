@@ -512,18 +512,38 @@ describe("skills extension", () => {
       expect(asked).toEqual([
         {
           type: "choice",
-          message:
-            "2 skills discovered\nNot loaded:\ncollision: Earlier skill with this name wins (/home/fixture/.agents/skills/dup/SKILL.md)\nskipped: Skill disables model invocation (/home/fixture/.agents/skills/private/SKILL.md)",
+          message: "Skills (2)",
+          summary: "2 skills were not loaded. Details shows why.",
+          details: [
+            {
+              label: "collision",
+              value:
+                "Earlier skill with this name wins (/home/fixture/.agents/skills/dup/SKILL.md)",
+            },
+            {
+              label: "skipped",
+              value:
+                "Skill disables model invocation (/home/fixture/.agents/skills/private/SKILL.md)",
+            },
+            {
+              label: "botanical-retention",
+              value: "/work/.agents/skills/botanical-retention/SKILL.md",
+            },
+            {
+              label: "herdr",
+              value: "/home/fixture/.agents/skills/herdr/SKILL.md",
+            },
+          ],
           options: [
             {
               value: "botanical-retention",
               label: "botanical-retention",
-              description: "/work/.agents/skills/botanical-retention/SKILL.md",
+              description: "Retain Botanical code",
             },
             {
               value: "herdr",
               label: "herdr",
-              description: "/home/fixture/.agents/skills/herdr/SKILL.md",
+              description: "Coordinate teams",
             },
           ],
         },

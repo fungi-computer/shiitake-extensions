@@ -211,7 +211,8 @@ it("offers a person only the current attachments when choosing Home", async () =
       type: "prompt",
       prompt: {
         type: "choice",
-        message: "Choose this Agent's Home Computer",
+        message: "Choose a Home Computer",
+        summary: "The Agent reads and edits files here by default.",
         options: [
           { value: "a", label: "a" },
           { value: "b", label: "b" },
@@ -225,6 +226,12 @@ it("offers a person only the current attachments when choosing Home", async () =
     });
     expect(await test.view()).toMatchObject({
       value: { attachmentId: "att_b" },
+    });
+    await expect(
+      test.host.session("garden").extension(homeContract.id).call("home", {}),
+    ).resolves.toMatchObject({
+      type: "prompt",
+      prompt: { current: "b" },
     });
     expect(calls).toEqual([]);
   } finally {

@@ -19,10 +19,12 @@ const rules = {
   goal: [
     "create_goal({objective})",
     "get_goal({})",
-    "update_goal({status:'complete'|'blocked', reason})",
+    "update_goal({status:'complete'|'blocked'|'clear'|'resume', reason})",
     "You may start a goal yourself",
     "audit every requirement against evidence",
     "same external impasse for three consecutive goal turns",
+    "You may complete, block, clear or resume a goal that paused on its own",
+    "a goal a person paused or stopped you may only complete",
     "Human pause/resume/clear remain human controls",
     "plan.update_plan",
   ],
@@ -171,7 +173,7 @@ it("keeps the full guidance and current state while a goal, plan and loop are li
   expect(prompts.length).toBeGreaterThan(1);
   const goal = section(prompt, "goal");
   expect(goal).toContain("Tidy the kiln");
-  for (const rule of rules.goal.slice(3, 7)) expect(goal).toContain(rule);
+  for (const rule of rules.goal.slice(3)) expect(goal).toContain(rule);
   const plan = section(prompt, "plan");
   expect(plan).toContain("Sweep");
   for (const rule of rules.plan.slice(1)) expect(plan).toContain(rule);

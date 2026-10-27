@@ -82,7 +82,7 @@ export default defineClientEntry(loopContract, {
             cancel: {
               id: "loop",
               label: "stop loop",
-              input: { action: "stop" },
+              input: { action: "stop-ask" },
             },
           }
         : null,

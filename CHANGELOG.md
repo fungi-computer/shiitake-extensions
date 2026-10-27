@@ -1,5 +1,34 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.3.0
+
+### Minor Changes
+
+- Changes since 0.2.0:
+
+  - fix(shiitake-extensions): shorten the loop start prompt title to fit the
+    60-character contract
+  - fix(tui): footer stop loop asks first; modal rules walk the real producers
+  - fix(subagents): watch child command receipts only on demand
+  - fix(goal): let an Agent settle and resume its own paused goal
+  - fix(goal): bound delegated waiting to unsettled child work
+  - fix(goal): fence later turns by goal revision
+  - feat(tui): migrate the Loop, extension, Archive, Skills, question and
+    recovery modals
+  - feat(tui): migrate the model, sign-in, resume, fork and Home pickers to the
+    shared modal
+  - feat(tui): shared modal anatomy with safe-first confirmations and Goal
+    paused
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+  - @fungi.computer/knapsack@0.3.1
+  - @fungi.computer/shiitake@0.5.0
+  - @fungi.computer/whistle@0.2.0
+
 ## 0.2.0
 
 ### Minor Changes

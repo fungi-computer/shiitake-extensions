@@ -181,11 +181,30 @@ function skillsStep(
   return ask(
     {
       type: "choice",
-      message: `${String(found.skills.length)} ${found.skills.length === 1 ? "skill" : "skills"} discovered${skipped}`,
+      message: `Skills (${String(found.skills.length)})`,
+      summary:
+        reasons.length === 0
+          ? undefined
+          : `${String(reasons.length)} ${reasons.length === 1 ? "skill was" : "skills were"} not loaded. Details shows why.`,
+      details: [
+        ...reasons
+          .slice(0, config.maximumListedDiagnostics)
+          .map((diagnostic) => ({
+            label: diagnostic.reason,
+            value: `${diagnostic.message} (${diagnostic.path})`,
+          })),
+        ...found.skills.map((skill) => ({
+          label: skill.name,
+          value: skill.location,
+        })),
+      ].slice(0, 24),
       options: found.skills.map((skill) => ({
         value: skill.name,
         label: skill.name,
-        description: skill.location,
+        description: skill.description
+          .replace(/\s+/gu, " ")
+          .trim()
+          .slice(0, 100),
       })),
     },
     {},

@@ -1,5 +1,36 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.4.0
+
+### Minor Changes
+
+- Changes since 0.3.0:
+
+  - fix(shiitake): probe terminal facts before projecting settlement
+  - fix(subagents): retain quiet watched rows in the bounded cache
+  - fix(subagents): poll the footer only for live observers
+  - refactor(whistle)!: execute commands by their typed key; only Whistle mints
+    ids
+  - fix(question): a routed ask's backstop never expires the person's question
+  - feat(subagents): a calm routed row offers Answer too
+  - feat(shiitake): route a child's waiting items to the Agent that sent the
+    work
+  - feat(parakeet): answer questions in the composer on the terminal and the web
+  - fix(goal): a delegated lane's goal adopts the send instead of repeating it
+  - feat(goal): goal.wait, polling turns wait on children, agents.send puts new
+    Sessions under a goal
+  - feat(shiitake): support Local parent answers to child Asks
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+  - @fungi.computer/knapsack@0.4.0
+  - @fungi.computer/shiitake@0.6.0
+  - @fungi.computer/whistle@0.3.0
+  - @fungi.computer/mycelium@0.2.3
+
 ## 0.3.0
 
 ### Minor Changes

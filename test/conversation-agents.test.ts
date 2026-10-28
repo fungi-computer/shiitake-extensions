@@ -2,7 +2,10 @@ import {
   AgentCreateRefused,
   type AgentControlDirectory,
 } from "@fungi.computer/shiitake/agent-control";
+import { bindSessionExtension } from "@fungi.computer/shiitake/client";
 import { afterEach, expect, it, vi } from "vitest";
+import { goalContract } from "../src/goal/contract.js";
+import { goalExtension } from "../src/goal/host.js";
 import {
   assertOrdinaryAgentCreation,
   createConversationAgents,
@@ -10,7 +13,7 @@ import {
 } from "../src/roster/conversation-agents.js";
 import { botanicalAgentExtensions } from "../src/roster.js";
 import { subagentsGrant } from "../src/subagents/host.js";
-import { openAgent, run, sqliteOwner } from "./fixtures/host.js";
+import { grantAll, openAgent, run, sqliteOwner } from "./fixtures/host.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -161,7 +164,7 @@ it("does not count relay-held mail as accepted delegated work", async () => {
   }
 });
 
-it("tracks a recorded child command only until its owner's settlement is visible", async () => {
+it("bounds each live child-command tick to three owner reads, then stops at settlement", async () => {
   const fixture = sqliteOwner();
   const childStore = sqliteOwner();
   const child = await openAgent(childStore.owner, {
@@ -188,6 +191,9 @@ it("tracks a recorded child command only until its owner's settlement is visible
           agent: {
             listSessions: () => run(child.agent.listSessions()),
             session: () => ({
+              extension: () => ({
+                call: () => Promise.reject(new Error("unused")),
+              }),
               read: (options) =>
                 run(child.agent.session("child-session").read(options)),
               readSettlement: (commandId, options) => {
@@ -218,10 +224,15 @@ it("tracks a recorded child command only until its owner's settlement is visible
       "parent",
       new AbortController().signal,
     );
+    const childReads = vi.spyOn(childStore.owner.sql, "exec");
     expect(source.hasLiveChildCommand("parent")).toBe(true);
     expect(source.hasLiveChildCommand("not-parent")).toBe(false);
-    await expect.poll(() => reads).toBeGreaterThanOrEqual(1);
+    await expect.poll(() => reads).toBe(1);
+    expect(childReads.mock.calls.length).toBeLessThanOrEqual(3);
     expect(source.hasLiveChildCommand("parent")).toBe(true);
+    childReads.mockClear();
+    await expect.poll(() => reads, { timeout: 3_000 }).toBe(2);
+    expect(childReads.mock.calls.length).toBeLessThanOrEqual(3);
     await child.drain();
     await expect
       .poll(() => source.hasLiveChildCommand("parent"), { timeout: 7_000 })
@@ -254,6 +265,7 @@ it("uses the recipient's admitted Session when a delegated send omits one", asyn
         requestId: "first-send",
         text: "work",
         delivery: "followUp",
+        goal: false,
       },
       "parent",
       new AbortController().signal,
@@ -298,6 +310,93 @@ it("retains ordinary creation admission and the base roster plus subagent grant"
       subagentsGrant,
     ]);
   } finally {
+    fixture.close();
+  }
+});
+
+it("a sessionless send puts the recipient's new Session under a goal; goal:false and existing Sessions do not", async () => {
+  const fixture = sqliteOwner();
+  const childStore = sqliteOwner();
+  const child = await openAgent(childStore.owner, grantAll([goalExtension]));
+  try {
+    const conversations = createConversationAgents(fixture.owner);
+    // The recipient admits the send into its new Session, as delivery does.
+    const accept: NonNullable<AgentControlDirectory["send"]> = async (task) => {
+      const sessionId = `lane-${task.requestId}`;
+      const admitted = await run(
+        child.agent.session(sessionId).send(task.text, {
+          requestId: task.requestId,
+          delivery: "followUp",
+        }),
+      );
+      return { ...admitted, sessionId };
+    };
+    const host = {
+      ...directory(),
+      send: accept,
+      open: () =>
+        Promise.resolve({
+          agent: { session: (sessionId: string) => child.session(sessionId) },
+          release: () => Promise.resolve(),
+        }),
+    };
+    const recorded = conversations.recording("parent", host);
+    const signal = new AbortController().signal;
+    const objectiveOf = async (requestId: string) => {
+      const session = child.session(`lane-${requestId}`);
+      const view = bindSessionExtension(session, goalContract).view(
+        await session.read(),
+      );
+      return view.status === "running"
+        ? view.value?.goal?.objective
+        : "stopped";
+    };
+    const base = {
+      agentId: "child",
+      text: "\nBuild the fern lane\nwith details",
+      delivery: "followUp" as const,
+    };
+    await recorded.send({ ...base, requestId: "default" }, "parent", signal);
+    await recorded.send(
+      { ...base, requestId: "named", goal: "Ship the fern lane" },
+      "parent",
+      signal,
+    );
+    await recorded.send(
+      { ...base, requestId: "quick", goal: false },
+      "parent",
+      signal,
+    );
+    expect(await objectiveOf("default")).toBe("Build the fern lane");
+    expect(await objectiveOf("named")).toBe("Ship the fern lane");
+    expect(await objectiveOf("quick")).toBeUndefined();
+    // The goal adopts the send: the lane's own prompt is never repeated,
+    // and its settlement starts the goal turns.
+    await child.drain();
+    const prompts = (await child.session("lane-named").read()).messages.flatMap(
+      ({ value }) => {
+        if (value.role !== "user") return [];
+        const { content } = value;
+        return Array.isArray(content)
+          ? content.flatMap((part) => (part.type === "text" ? [part.text] : []))
+          : [content];
+      },
+    );
+    expect(prompts[0]).toBe(base.text);
+    expect(prompts.filter((text) => text === "Ship the fern lane")).toEqual([]);
+    expect(prompts.length).toBeGreaterThan(1);
+    expect(prompts.slice(1).every((text) => text.startsWith("Goal turn"))).toBe(
+      true,
+    );
+    await recorded.send(
+      { ...base, requestId: "existing", sessionId: "lane-existing" },
+      "parent",
+      signal,
+    );
+    expect(await objectiveOf("existing")).toBeUndefined();
+  } finally {
+    await child.close();
+    childStore.close();
     fixture.close();
   }
 });

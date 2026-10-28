@@ -6,11 +6,344 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import { afterEach, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { botanicalAgentExtensions } from "../src/roster.js";
+import {
+  botanicalAgentExtensions,
+  botanicalExtensionsWithSenderRouting,
+} from "../src/roster.js";
 import { openAgent, sqliteOwner } from "./fixtures/host.js";
-import { questionHost, questions } from "./fixtures/ask.js";
+import { questionHost, questions, mintedId } from "./fixtures/ask.js";
 
 afterEach(() => vi.useRealTimers());
+
+const scout = {
+  agentId: "agent-shiitake",
+  sessionId: "session-shiitake",
+  name: "Shiitake",
+};
+const questionId = "botanical-session-question";
+
+function questionOf(host: Awaited<ReturnType<typeof questionHost>>["host"]) {
+  return host.session("questions").extension(questionId);
+}
+
+it("a mail-sent run's ask waits on its sender and parks", async () => {
+  const fixture = await questionHost(
+    { questions, mode: "wait" },
+    { extensions: botanicalExtensionsWithSenderRouting(), sender: scout },
+  );
+  const { store, host } = fixture;
+  try {
+    const { askId } = await fixture.park();
+    const snapshot = await host.session("questions").read();
+    expect(snapshot.attention).toEqual([
+      expect.objectContaining({
+        id: askId,
+        kind: "question",
+        inbox: false,
+        waitingOn: scout,
+      }),
+    ]);
+    await expect(questionOf(host).call("list", {})).resolves.toEqual({
+      asks: [
+        expect.objectContaining({
+          askId,
+          status: "parked",
+          waitingOn: scout,
+        }),
+      ],
+    });
+    // The child's turn settles with the item named in its reply to the sender.
+    expect(fixture.settlements).toEqual([
+      expect.objectContaining({
+        waitingOnYou: [{ itemId: askId, kind: "question", summary: "Storage" }],
+      }),
+    ]);
+  } finally {
+    await host.close();
+    store.close();
+  }
+});
+
+it("a person-sent run's ask still needs you", async () => {
+  const fixture = await questionHost(
+    { questions, mode: "continue" },
+    { extensions: botanicalExtensionsWithSenderRouting() },
+  );
+  const { store, host } = fixture;
+  try {
+    const { askId } = await fixture.park();
+    const snapshot = await host.session("questions").read();
+    expect(snapshot.attention).toEqual([
+      expect.objectContaining({ id: askId, kind: "question" }),
+    ]);
+    expect(snapshot.attention[0]).not.toHaveProperty("waitingOn");
+    expect(snapshot.attention[0]).not.toHaveProperty("inbox");
+    expect(fixture.settlements).toEqual([]);
+  } finally {
+    await host.close();
+    store.close();
+  }
+});
+
+it("the shared roster sends a mail-sent run's ask to a person", async () => {
+  const fixture = await questionHost(
+    { questions, mode: "continue" },
+    { sender: scout },
+  );
+  const { store, host } = fixture;
+  try {
+    await fixture.park();
+    const [item] = (await host.session("questions").read()).attention;
+    expect(item).not.toHaveProperty("waitingOn");
+    expect(item).not.toHaveProperty("inbox");
+  } finally {
+    await host.close();
+    store.close();
+  }
+});
+
+it("answers a routed Ask only as the Agent Session it waits on, attributed in the reply", async () => {
+  const fixture = await questionHost(
+    { questions, mode: "continue" },
+    { extensions: botanicalExtensionsWithSenderRouting(), sender: scout },
+  );
+  const { store, host } = fixture;
+  let reopened = host;
+  try {
+    const { askId } = await fixture.park();
+    const input = {
+      askId,
+      requestId: "agent-answer-1",
+      answers: { storage: { selected: ["SQLite"], text: "Keep it local." } },
+    };
+    await expect(questionOf(host).call("answerAgent", input)).rejects.toThrow(
+      "authenticated Agent",
+    );
+    const imposter = { agentId: "agent-other", sessionId: scout.sessionId };
+    await expect(
+      questionOf(host).call("answerAgent", input, imposter),
+    ).resolves.toMatchObject({
+      result: { result: "refused", reason: "not_sender" },
+    });
+    await expect(questionOf(host).call("list", {})).resolves.toMatchObject({
+      asks: [{ askId, status: "parked" }],
+    });
+    const sender = { agentId: scout.agentId, sessionId: scout.sessionId };
+    const accepted = {
+      result: {
+        result: "accepted",
+        via: "follow_up",
+        commandId: mintedId,
+      },
+      answeredBy: { kind: "agent", agentId: scout.agentId },
+    };
+    await expect(
+      questionOf(host).call("answerAgent", input, sender),
+    ).resolves.toEqual(accepted);
+    await host.close();
+    reopened = await openAgent(
+      store.owner,
+      botanicalExtensionsWithSenderRouting(),
+    );
+    await expect(
+      questionOf(reopened).call("answerAgent", input, sender),
+    ).resolves.toEqual(accepted);
+    await expect(
+      questionOf(reopened).call(
+        "answerAgent",
+        { ...input, answers: { storage: { selected: ["PostgreSQL"] } } },
+        sender,
+      ),
+    ).rejects.toThrow("used for a different response");
+    const snapshot = await reopened.session("questions").read();
+    expect(snapshot.attention).toEqual([]);
+    expect(snapshot.pending.prompts[0]?.text).toContain(
+      `Answer from Agent ${scout.agentId} to ask ${askId}:`,
+    );
+  } finally {
+    await reopened.close();
+    store.close();
+  }
+});
+
+it("a person may always answer a routed Ask", async () => {
+  const fixture = await questionHost(
+    { questions, mode: "continue" },
+    { extensions: botanicalExtensionsWithSenderRouting(), sender: scout },
+  );
+  const { store, host } = fixture;
+  try {
+    const { askId } = await fixture.park();
+    await expect(
+      questionOf(host).call("answer", {
+        askId,
+        requestId: "person-answers-routed",
+        answers: { storage: { selected: ["SQLite"] } },
+      }),
+    ).resolves.toMatchObject({
+      result: "accepted",
+      via: "follow_up",
+      commandId: mintedId,
+    });
+  } finally {
+    await host.close();
+    store.close();
+  }
+});
+
+it("escalation from the Agent a routed Ask waits on makes the child need you", async () => {
+  const fixture = await questionHost(
+    { questions, mode: "continue" },
+    { extensions: botanicalExtensionsWithSenderRouting(), sender: scout },
+  );
+  const { store, host } = fixture;
+  try {
+    const { askId } = await fixture.park();
+    const sender = { agentId: scout.agentId, sessionId: scout.sessionId };
+    await expect(
+      questionOf(host).call(
+        "escalateAgent",
+        { askId },
+        { agentId: "agent-other", sessionId: scout.sessionId },
+      ),
+    ).resolves.toEqual({ result: "refused", reason: "not_sender" });
+    expect((await host.session("questions").read()).attention[0]).toMatchObject(
+      { inbox: false, waitingOn: scout },
+    );
+    await expect(
+      questionOf(host).call("escalateAgent", { askId }, sender),
+    ).resolves.toEqual({ result: "escalated", to: "person" });
+    const [item] = (await host.session("questions").read()).attention;
+    expect(item).toMatchObject({ id: askId, kind: "question" });
+    expect(item).not.toHaveProperty("waitingOn");
+    expect(item).not.toHaveProperty("inbox");
+    // It no longer waits on the Agent, which can neither answer nor escalate again.
+    await expect(
+      questionOf(host).call(
+        "answerAgent",
+        {
+          askId,
+          requestId: "late-agent-answer",
+          answers: { storage: { selected: ["SQLite"] } },
+        },
+        sender,
+      ),
+    ).resolves.toMatchObject({
+      result: { result: "refused", reason: "not_sender" },
+    });
+    await expect(
+      questionOf(host).call("answer", {
+        askId,
+        requestId: "person-answers-escalated",
+        answers: { storage: { selected: ["PostgreSQL"] } },
+      }),
+    ).resolves.toMatchObject({ result: "accepted" });
+  } finally {
+    await host.close();
+    store.close();
+  }
+});
+
+it("a routed ask nobody answers goes to a person at its backstop", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const createdAt = Date.parse("2026-10-27T12:00:00Z");
+  vi.setSystemTime(createdAt);
+  const fixture = await questionHost(
+    { questions, mode: "continue" },
+    { extensions: botanicalExtensionsWithSenderRouting(), sender: scout },
+  );
+  const { store, host } = fixture;
+  try {
+    const { askId } = await fixture.park();
+    // The backstop is core's own timer, not an expiry the asker chose.
+    expect(
+      (await host.session("questions").read()).attention[0],
+    ).not.toHaveProperty("expiresAt");
+    const expiresAt = createdAt + 900_000;
+    vi.setSystemTime(expiresAt - 1);
+    await host.reconcile();
+    expect((await host.session("questions").read()).attention[0]).toMatchObject(
+      { waitingOn: scout },
+    );
+    vi.setSystemTime(expiresAt);
+    await host.reconcile();
+    const snapshot = await host.session("questions").read();
+    expect(snapshot.attention).toEqual([
+      expect.objectContaining({ id: askId, kind: "question" }),
+    ]);
+    expect(snapshot.attention[0]).not.toHaveProperty("waitingOn");
+    expect(snapshot.attention[0]).not.toHaveProperty("expiresAt");
+    // The default never stood in for a decision: the ask is still open.
+    expect(snapshot.pending.prompts).toEqual([]);
+    await expect(questionOf(host).call("list", {})).resolves.toMatchObject({
+      asks: [{ askId, status: "parked" }],
+    });
+  } finally {
+    await host.close();
+    store.close();
+  }
+});
+
+it("an escalated routed ask stays open for the person past the backstop", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const createdAt = Date.parse("2026-10-27T12:00:00Z");
+  vi.setSystemTime(createdAt);
+  const fixture = await questionHost(
+    { questions, mode: "continue" },
+    { extensions: botanicalExtensionsWithSenderRouting(), sender: scout },
+  );
+  const { store, host } = fixture;
+  try {
+    const { askId } = await fixture.park();
+    await expect(
+      questionOf(host).call(
+        "escalateAgent",
+        { askId },
+        { agentId: scout.agentId, sessionId: scout.sessionId },
+      ),
+    ).resolves.toEqual({ result: "escalated", to: "person" });
+    vi.setSystemTime(createdAt + 900_000 * 4);
+    await host.reconcile();
+    const snapshot = await host.session("questions").read();
+    expect(snapshot.attention).toEqual([
+      expect.objectContaining({ id: askId, kind: "question" }),
+    ]);
+    // Nothing answered for the person: no expiry, no default, no follow-up.
+    expect(snapshot.pending.prompts).toEqual([]);
+    await expect(questionOf(host).call("list", {})).resolves.toMatchObject({
+      asks: [{ askId, status: "parked" }],
+    });
+  } finally {
+    await host.close();
+    store.close();
+  }
+});
+
+it("a routed ask with a long asker expiry still reaches a person at the backstop", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const createdAt = Date.parse("2026-10-27T12:00:00Z");
+  vi.setSystemTime(createdAt);
+  const fixture = await questionHost(
+    {
+      questions,
+      mode: "continue",
+      onExpire: { afterMinutes: 600, action: "proceed_with_recommended" },
+    },
+    { extensions: botanicalExtensionsWithSenderRouting(), sender: scout },
+  );
+  const { store, host } = fixture;
+  try {
+    const { askId } = await fixture.park();
+    vi.setSystemTime(createdAt + 900_000);
+    await host.reconcile();
+    const [item] = (await host.session("questions").read()).attention;
+    expect(item).toMatchObject({ id: askId, kind: "question" });
+    expect(item).not.toHaveProperty("waitingOn");
+  } finally {
+    await host.close();
+    store.close();
+  }
+});
 
 it("parks a question through the ordinary roster and retains its attention and projection after reopen", async () => {
   const fixture = await questionHost();
@@ -95,7 +428,11 @@ it("recovers a live question after process loss without asking twice", async () 
         requestId: "answer-restored",
         answers: { storage: { selected: ["SQLite"] } },
       }),
-    ).toEqual({ result: "accepted", via: "follow_up" });
+    ).toEqual({
+      result: "accepted",
+      via: "follow_up",
+      commandId: mintedId,
+    });
     const pending = (await host.session("questions").read()).pending.prompts;
     expect(pending).toHaveLength(1);
     await host.close();
@@ -564,7 +901,11 @@ it("answers a parked question once and replays the accepted result after restart
         .session("questions")
         .extension("botanical-session-question")
         .call("answer", input);
-    const accepted = { result: "accepted", via: "follow_up" };
+    const accepted = {
+      result: "accepted",
+      via: "follow_up",
+      commandId: mintedId,
+    };
     expect(await call(answer)).toEqual(accepted);
     expect(await call(answer)).toEqual(accepted);
     await expect(
@@ -623,7 +964,11 @@ it("declines a parked question once, preserving the question and note in its fol
     const commands = host
       .session("questions")
       .extension("botanical-session-question");
-    const accepted = { result: "accepted", via: "follow_up" };
+    const accepted = {
+      result: "accepted",
+      via: "follow_up",
+      commandId: mintedId,
+    };
     expect(await commands.call("decline", decline)).toEqual(accepted);
     expect(await commands.call("decline", decline)).toEqual(accepted);
     await expect(
@@ -1228,7 +1573,11 @@ it("does not resend a withdrawn follow-up after restart or an exact answer retry
         .session("questions")
         .extension("botanical-session-question")
         .call("answer", answer),
-    ).toEqual({ result: "accepted", via: "follow_up" });
+    ).toEqual({
+      result: "accepted",
+      via: "follow_up",
+      commandId: mintedId,
+    });
     const followUp = (await host.session("questions").read()).pending
       .prompts[0];
     if (followUp === undefined) throw new Error("Expected answer follow-up");
@@ -1246,7 +1595,11 @@ it("does not resend a withdrawn follow-up after restart or an exact answer retry
         .session("questions")
         .extension("botanical-session-question")
         .call("answer", answer),
-    ).toEqual({ result: "accepted", via: "follow_up" });
+    ).toEqual({
+      result: "accepted",
+      via: "follow_up",
+      commandId: mintedId,
+    });
     const snapshot = await host.session("questions").read();
     expect(snapshot.pending.prompts).toEqual([]);
     expect(snapshot.attention).toEqual([]);
@@ -1293,7 +1646,11 @@ it("reuses a parked receipt after an answer commits before the original tool res
           requestId: "answer-before-original-commit",
           answers: { storage: { selected: ["SQLite"] } },
         }),
-    ).toEqual({ result: "accepted", via: "follow_up" });
+    ).toEqual({
+      result: "accepted",
+      via: "follow_up",
+      commandId: mintedId,
+    });
     store.copyTo(path);
     Effect.runSync(Deferred.succeed(release, undefined));
     await Effect.runPromise(host.agent.session("questions").abort);

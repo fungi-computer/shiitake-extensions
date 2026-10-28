@@ -62,7 +62,7 @@ it("finds and describes every Ask, goal, loop and plan operation in a normal run
                   cursor === null ? { limit: 3 } : { limit: 3, cursor },
                 ),
               );
-            expect(page.total).toBe(13);
+            expect(page.total).toBe(14);
             listed.push(...page.results.map((row) => row.path));
             cursor = page.nextCursor;
           } while (cursor !== null);
@@ -147,6 +147,7 @@ it("finds and describes every Ask, goal, loop and plan operation in a normal run
         "goal.create_goal",
         "goal.get_goal",
         "goal.update_goal",
+        "goal.wait",
       ]),
     );
     expect(pathsByQuery.get("loop")).toEqual(
@@ -169,6 +170,7 @@ it("finds and describes every Ask, goal, loop and plan operation in a normal run
       "goal.create_goal",
       "goal.get_goal",
       "goal.update_goal",
+      "goal.wait",
       "loop.get",
       "loop.schedule_next",
       "loop.start",
@@ -177,7 +179,7 @@ it("finds and describes every Ask, goal, loop and plan operation in a normal run
       "question.ask",
       "question.withdraw",
     ]);
-    expect(new Set(listed).size).toBe(13);
+    expect(new Set(listed).size).toBe(14);
     const questionSchema = {
       properties: {
         questions: {

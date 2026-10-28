@@ -39,8 +39,10 @@ function createConversationAgents(storage): object;
 
 This host's own record of the Agents each conversation created or sent accepted
 work to, written as its Agent-control directory accepts them (Wiki:
-agent-runtime-tools-and-clients, read-only sub-agent view). It feeds the footer
-only; it owns no relationship and grants nothing.
+agent-runtime-tools-and-clients, read-only sub-agent view). Accepted child
+command receipts are separately reconciled against their owner's settlement
+records for the parent's goal guard. Neither record grants authority over a
+child.
 
 #### Parameters
 
@@ -61,7 +63,14 @@ only; it owns no relationship and grants nothing.
 ### oysterAgentExtensions()
 
 ```ts
-function oysterAgentExtensions(source): object;
+function oysterAgentExtensions(source): Readonly<{
+  roster: readonly RosteredExtensionV0[];
+  grants: readonly Readonly<{
+    id: string & Brand<"ExtensionId">;
+    capabilities: readonly ExtensionCapabilityV0[];
+    grantKey?: string;
+  }>[];
+}>;
 ```
 
 Both hosts compose the ordinary roster and its read-only created-Agent footer.
@@ -74,7 +83,6 @@ Both hosts compose the ordinary roster and its read-only created-Agent footer.
 
 #### Returns
 
-| Name     | Type                                                                                                                                          | Description                                                  |
-| -------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| `roster` | `RosteredExtensionV0`[]                                                                                                                       | Ordinary extensions plus the read-only created-Agent footer. |
-| `grants` | `Readonly`\<\{ `id`: `string` & `Brand`\<`"ExtensionId"`\>; `capabilities`: readonly `ExtensionCapabilityV0`[]; `grantKey?`: `string`; \}\>[] | Host grants corresponding to the composed extension roster.  |
+`Readonly`\<\{ `roster`: readonly `RosteredExtensionV0`[]; `grants`: readonly
+`Readonly`\<\{ `id`: `string` & `Brand`\<`"ExtensionId"`\>; `capabilities`:
+readonly `ExtensionCapabilityV0`[]; `grantKey?`: `string`; \}\>[]; \}\>

@@ -1,4 +1,7 @@
-import { ExtensionId } from "@fungi.computer/shiitake/extensions";
+import {
+  AttentionRecipientSchema,
+  ExtensionId,
+} from "@fungi.computer/shiitake/extensions";
 import * as Schema from "effect/Schema";
 import { CatalogStep } from "../internal/catalog.js";
 
@@ -60,11 +63,16 @@ export const Questions = Schema.Array(Question).check(
 );
 /** One decoded decision question. */
 export type Question = Schema.Schema.Type<typeof Question>;
-
 /** The complete question data shared by ordinary Session clients. */
 export const OpenAsk = Schema.Struct({
   /** Durable identity of the open ask. */
   askId: Schema.String,
+  /**
+   * The Agent this ask waits on first, derived by the host from whom the
+   * asking run's work came from. Absent means a person. An ask waiting on an
+   * Agent is calm: the Agent answers it or escalates it to a person.
+   */
+  waitingOn: Schema.optionalKey(AttentionRecipientSchema),
   /** Decisions awaiting the person's answers. */
   questions: Questions,
   /** Whether the ask is live in a turn or parked for later. */
@@ -134,6 +142,8 @@ export const HumanResult = Schema.Union([
     result: Schema.Literal("accepted"),
     /** Whether the reply resumed its turn or became a follow-up. */
     via: Schema.Literals(["in_turn", "follow_up"]),
+    /** The follow-up command carrying the reply, when it became one. */
+    commandId: Schema.optionalKey(text(256)),
   }),
   Schema.Struct({
     /** Ask had already reached a terminal state. */
@@ -149,6 +159,55 @@ export const HumanResult = Schema.Union([
 /** Decoded outcome of a human answer or decline. */
 export type HumanResult = Schema.Schema.Type<typeof HumanResult>;
 
+/** Only the Agent an Ask waits on may answer or escalate it. */
+export const SenderRefusal = Schema.Struct({
+  /** The caller is not the Agent this Ask waits on. */
+  result: Schema.Literal("refused"),
+  /** Explains why the Agent's response cannot be applied. */
+  reason: Schema.Literal("not_sender"),
+});
+/** Outcome of the Agent an Ask waits on answering it. */
+export const AgentAnswerResult = Schema.Union([HumanResult, SenderRefusal]);
+/** Decoded result of an authenticated Agent answer. */
+export type AgentAnswerResult = Schema.Schema.Type<typeof AgentAnswerResult>;
+
+/** The Agent that answered, as the host authenticated it. */
+export const AnsweredBy = Schema.Struct({
+  /** Identifies an Agent, never a person. */
+  kind: Schema.Literal("agent"),
+  /** Stable identity of the authenticated Agent. */
+  agentId: text(256),
+});
+
+/** Outcome of the Agent an Ask waits on passing it on. */
+export const EscalateResult = Schema.Union([
+  Schema.Struct({
+    /** The Ask now waits on someone else. */
+    result: Schema.Literal("escalated"),
+    /** Whom it waits on now: a person. */
+    to: Schema.Literal("person"),
+  }),
+  Schema.Struct({
+    /** Ask had already reached a terminal state. */
+    result: Schema.Literal("closed"),
+    /** Terminal state that prevented the escalation. */
+    status: ClosedStatus,
+  }),
+  Schema.Struct({
+    /** No ask with this identity exists. */
+    result: Schema.Literal("not_found"),
+  }),
+  SenderRefusal,
+]);
+/** Decoded result of passing an Ask on. */
+export type EscalateResult = Schema.Schema.Type<typeof EscalateResult>;
+
+/** The Agent's request to pass an Ask on; the caller is host context. */
+export const EscalateInput = Schema.Struct({
+  /** Ask being passed on. */
+  askId: text(256),
+});
+
 const answerStep = {
   /** Ask whose answer draft is being edited. */
   askId: AnswerInput.fields.askId,
@@ -162,30 +221,14 @@ const answerStep = {
   /** Answers accumulated by preceding conversation steps. */
   answers: Answers,
 };
-/** The ordinary /answer conversation carries its draft between typed steps. */
+/** The answer conversation carries its draft between decision steps. */
 export const AnswerFlowInput = Schema.Union([
   Schema.Struct({
-    /** Multiple-choice selection step. */
-    stage: Schema.Literal("multiple"),
+    /** One decision answered in the composer. */
+    stage: Schema.Literal("decision"),
     ...answerStep,
-    /** Encoded selection supplied by the human control. */
-    selection: Schema.String.check(Schema.isMaxLength(1_000)),
-  }),
-  Schema.Struct({
-    /** Single-choice selection step. */
-    stage: Schema.Literal("selection"),
-    ...answerStep,
-    /** Encoded selection supplied by the human control. */
-    selection: Schema.String.check(Schema.isMaxLength(1_000)),
-  }),
-  Schema.Struct({
-    /** Free-text answer step. */
-    stage: Schema.Literal("text"),
-    ...answerStep,
-    /** Offered choices retained while entering free text. */
-    selected: Answers.value.fields.selected,
-    /** Free-text answer supplied by the person. */
-    text: Schema.String.check(Schema.isMaxLength(4_000)),
+    /** The person's picks and optional written answer for question `index`. */
+    answer: Answers.value,
   }),
   Schema.Struct({
     /** Ask whose answer conversation should be opened. */
@@ -217,6 +260,29 @@ export const questionContract = {
       input: AnswerInput,
       /** Return admission or the ask's terminal state. */
       output: HumanResult,
+    },
+    /** Submit the answer of the Agent this Ask waits on; never a human answer. */
+    answerAgent: {
+      /** The child Session owns the Ask; caller authority is host context. */
+      scope: "session",
+      /** Decode the answer submission without any caller-supplied actor. */
+      input: AnswerInput,
+      /** Attribute the accepted answer to its authenticated Agent. */
+      output: Schema.Struct({
+        /** Whether the answer was accepted, or why not. */
+        result: AgentAnswerResult,
+        /** The authenticated Agent that answered. */
+        answeredBy: AnsweredBy,
+      }),
+    },
+    /** Pass the Ask on from the Agent it waits on; never a human action. */
+    escalateAgent: {
+      /** The child Session owns the Ask; caller authority is host context. */
+      scope: "session",
+      /** Decode the escalation without any caller-supplied recipient. */
+      input: EscalateInput,
+      /** Where the Ask waits now, or why it did not move. */
+      output: EscalateResult,
     },
     /** Decline an ask with an optional note. */
     decline: {

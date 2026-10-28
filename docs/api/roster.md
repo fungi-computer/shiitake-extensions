@@ -16,10 +16,32 @@
 const botanicalAgentExtensions: ExtensionRosterV0;
 ```
 
-Botanical's product roster with explicit grants. Hub and Local pass this same
-value; a stranger host passes its own (or an empty) roster.
+Botanical's shared roster with explicit grants. Local composes its
+sender-routing question extension through `botanicalExtensionsWithSkills`; hosts
+without that Local capability send every Ask to a person.
 
 ## Functions
+
+### botanicalExtensionsWithSubagents()
+
+```ts
+function botanicalExtensionsWithSubagents(base, source): ExtensionRosterV0;
+```
+
+Compose the goal and footer over one source; an absent goal is a wiring error.
+
+#### Parameters
+
+| Parameter | Type                                                 |
+| --------- | ---------------------------------------------------- |
+| `base`    | `ExtensionRosterV0`                                  |
+| `source`  | [`SubagentSource`](subagents/host.md#subagentsource) |
+
+#### Returns
+
+`ExtensionRosterV0`
+
+---
 
 ### botanicalExtensionsWithSkills()
 
@@ -34,6 +56,21 @@ A host with a SkillSource grants read-only skill discovery for its own runs.
 | Parameter | Type                                          |
 | --------- | --------------------------------------------- |
 | `source`  | [`SkillSource`](skills/source.md#skillsource) |
+
+#### Returns
+
+`ExtensionRosterV0`
+
+---
+
+### botanicalExtensionsWithSenderRouting()
+
+```ts
+function botanicalExtensionsWithSenderRouting(): ExtensionRosterV0;
+```
+
+Route Asks to the Agent that sent the work, only in a host that owns the Local
+answer door.
 
 #### Returns
 

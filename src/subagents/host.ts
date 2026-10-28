@@ -10,8 +10,12 @@ import {
 } from "@fungi.computer/shiitake/extensions";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import { catalog, done } from "../internal/catalog.js";
+import { advanceAnswerFlow } from "../question/answer-flow.js";
+import { AskProjection, questionContract } from "../question/contract.js";
 import type { WhistleCatalogStepV1 } from "@fungi.computer/whistle/catalog";
+import type { Answers } from "../question/contract.js";
 import {
   maximumSubagents,
   subagentsContract,
@@ -36,7 +40,7 @@ export type SubagentAgent = Readonly<{
   /** Open the read-only view of a selected child conversation. */
   session: (
     sessionId: string,
-  ) => Pick<ShiitakeSession, "read" | "readSettlement">;
+  ) => Pick<ShiitakeSession, "read" | "readSettlement" | "extension">;
 }>;
 
 /**
@@ -78,18 +82,15 @@ export type SubagentSource = Readonly<{
 export type SubagentTiming = Readonly<{
   /** A watcher's read refreshes rows at least this old. */
   refreshMs: number;
-  /** While a row is working or waiting, rows refresh this often. */
+  /** While a live view watches a working or waiting row, refresh this often. */
   pollMs: number;
-  /** Polling stops once no watcher has read the Session this long. */
-  interestMs: number;
 }>;
 
 const defaultTiming: SubagentTiming = Object.freeze({
   refreshMs: 1_000,
   pollMs: 5_000,
-  interestMs: 30_000,
 });
-/** Sessions whose rows are held at once; the least recently read go first. */
+/** Sessions held at once; evict unwatched rows first, then least recently read. */
 const cachedSessions = 64;
 /** Owner pages scanned for one child's row: 400 conversations. */
 const statusPages = 2;
@@ -102,7 +103,7 @@ export const subagentsGrant: ExtensionGrantV0 = {
 
 const settledState = {
   running: "working",
-  needs_you: "waiting",
+  needs_you: "needs_you",
   done: "idle",
   errored: "failed",
 } as const;
@@ -148,15 +149,47 @@ async function status(
       if (row === undefined || row.state === "unavailable")
         return { ...base, state: "unavailable" };
       const selected = { ...base, sessionId: row.sessionId };
-      if (row.state !== "needs_you")
+      if (row.state === "running" || row.state === "errored")
         return { ...selected, state: settledState[row.state] };
+      // An item waiting on an Agent is calm and leaves the inbox state alone,
+      // so a finished child is read for it too. Escalated items wait on a person.
       const snapshot = await opened.agent
         .session(row.sessionId)
         .read({ limit: 1 });
-      const attention = snapshot.attention[0]?.summary;
-      return attention === undefined
-        ? { ...selected, state: "waiting" }
-        : { ...selected, state: "waiting", attention };
+      const slot = snapshot.extensions[questionContract.id];
+      const asked =
+        slot?.status === "running"
+          ? Schema.decodeUnknownOption(AskProjection)(slot.value)
+          : Option.none();
+      const openAsks = Option.isSome(asked) ? asked.value.asks : [];
+      const routed = snapshot.attention.find((item) => item.waitingOn);
+      if (routed?.waitingOn !== undefined) {
+        const waiting: Subagent = {
+          ...selected,
+          state: "waiting_on_agent",
+          attention: routed.summary,
+          waitingOn: routed.waitingOn.name,
+        };
+        // A person may always answer first; the calm row offers it too.
+        const routedAsk = openAsks.find((open) => open.askId === routed.id);
+        return routedAsk === undefined
+          ? waiting
+          : {
+              ...waiting,
+              ask: { askId: routedAsk.askId, questions: routedAsk.questions },
+            };
+      }
+      const attention = snapshot.attention.find(
+        (item) => item.inbox !== false,
+      )?.summary;
+      if (row.state === "done") return { ...selected, state: "idle" };
+      const ask = openAsks.find((open) => open.waitingOn === undefined);
+      const needing: Subagent = { ...selected, state: "needs_you" };
+      const summary =
+        attention === undefined ? needing : { ...needing, attention };
+      return ask === undefined
+        ? summary
+        : { ...summary, ask: { askId: ask.askId, questions: ask.questions } };
     } finally {
       await opened.release();
     }
@@ -182,18 +215,22 @@ type Entry = {
 
 const live = (value: Rows | undefined) =>
   value?.agents.some(
-    (agent) => agent.state === "working" || agent.state === "waiting",
+    (agent) =>
+      agent.state === "working" ||
+      agent.state === "waiting_on_agent" ||
+      agent.state === "needs_you",
   ) === true;
 
 /**
  * One activation's in-memory rows. A watcher's projection read refreshes
- * stale rows outside the snapshot transaction; a changed or still-live result
- * publishes one observation, whose re-read keeps interest alive.
+ * stale rows outside the snapshot transaction. Only changed rows publish;
+ * only an actual live-view registration keeps polling alive.
  */
 function createRoster(
   source: SubagentSource,
   timing: SubagentTiming,
   publish: (sessionId: string) => Promise<void>,
+  isObserved: (sessionId: string) => boolean,
 ) {
   const entries = new Map<string, Entry>();
   const lifetime = new AbortController();
@@ -201,6 +238,21 @@ function createRoster(
   function forget(sessionId: string) {
     clearTimeout(entries.get(sessionId)?.timer);
     entries.delete(sessionId);
+  }
+
+  function schedule(sessionId: string, entry: Entry) {
+    if (
+      !lifetime.signal.aborted &&
+      entries.get(sessionId) === entry &&
+      entry.timer === undefined &&
+      !entry.refreshing &&
+      live(entry.value) &&
+      isObserved(sessionId)
+    )
+      entry.timer = setTimeout(() => {
+        entry.timer = undefined;
+        if (isObserved(sessionId)) void refresh(sessionId, entry);
+      }, timing.pollMs);
   }
 
   async function refresh(sessionId: string, entry: Entry) {
@@ -219,23 +271,14 @@ function createRoster(
       };
       const changed = JSON.stringify(value) !== JSON.stringify(entry.value);
       entry.value = value;
-      if (!lifetime.signal.aborted && (changed || live(value)))
-        await publish(sessionId);
+      if (!lifetime.signal.aborted && changed) await publish(sessionId);
     } catch (cause) {
       Effect.runFork(Effect.logError("subagents.refresh", cause));
     } finally {
       entry.refreshedAt = Date.now();
       entry.refreshing = false;
     }
-    if (
-      !lifetime.signal.aborted &&
-      entries.get(sessionId) === entry &&
-      live(entry.value) &&
-      Date.now() - entry.readAt < timing.interestMs
-    )
-      entry.timer = setTimeout(() => {
-        void refresh(sessionId, entry);
-      }, timing.pollMs);
+    schedule(sessionId, entry);
   }
 
   return {
@@ -262,7 +305,9 @@ function createRoster(
         entries.set(sessionId, entry);
         if (entries.size > cachedSessions) {
           const oldest = [...entries].sort(
-            ([, left], [, right]) => left.readAt - right.readAt,
+            ([leftId, left], [rightId, right]) =>
+              Number(isObserved(leftId)) - Number(isObserved(rightId)) ||
+              left.readAt - right.readAt,
           )[0];
           if (oldest !== undefined) forget(oldest[0]);
         }
@@ -270,9 +315,59 @@ function createRoster(
       entry.readAt = now;
       if (!entry.refreshing && now - entry.refreshedAt >= timing.refreshMs)
         void refresh(sessionId, entry);
+      else schedule(sessionId, entry);
       return entry.value === undefined
         ? undefined
         : { ...entry.value, expanded: entry.expanded };
+    },
+    /** The last read of one child of this conversation, if it is listed. */
+    child(
+      sessionId: string,
+      agentId: string,
+      childSessionId: string,
+    ): Subagent | undefined {
+      return entries
+        .get(sessionId)
+        ?.value?.agents.find(
+          (agent) =>
+            agent.agentId === agentId && agent.sessionId === childSessionId,
+        );
+    },
+    /**
+     * Hand a person's completed answer to the child's own question owner. The
+     * command that asked returns first, so the answer is sent outside it; a
+     * failure is logged and the row stays, so the person can answer again.
+     */
+    submit(
+      sessionId: string,
+      target: Readonly<{
+        agentId: string;
+        sessionId: string;
+        askId: string;
+        requestId: string;
+        answers: Answers;
+      }>,
+    ) {
+      void (async () => {
+        const opened = await source.open(target.agentId, lifetime.signal);
+        try {
+          await opened.agent
+            .session(target.sessionId)
+            .extension(questionContract.id)
+            .call("answer", {
+              askId: target.askId,
+              requestId: target.requestId,
+              answers: target.answers,
+            });
+        } finally {
+          await opened.release();
+        }
+        const entry = entries.get(sessionId);
+        if (entry !== undefined && !entry.refreshing)
+          await refresh(sessionId, entry);
+      })().catch((cause: unknown) => {
+        Effect.runFork(Effect.logError("subagents.answer", cause));
+      });
     },
     close() {
       lifetime.abort();
@@ -306,6 +401,7 @@ export function subagentsExtension(
                   Effect.runPromise(
                     ctx.transact(ctx.observe(sessionId)).pipe(Effect.ignore),
                   ),
+                ctx.isObserved,
               );
               rosters.set(ctx, roster);
               return roster;
@@ -329,6 +425,13 @@ export function subagentsExtension(
             slash: { aliases: ["agents"], order: 6 },
           },
         },
+        {
+          // Reached only from a sub-agent row's Answer action.
+          id: "answerChild",
+          title: "Answer a sub-agent",
+          category: "Conversation",
+          description: "Answer a question a sub-agent has escalated to you",
+        },
       ]),
       projection: {
         schema: subagentsContract.projection.schema,
@@ -349,6 +452,61 @@ export function subagentsExtension(
               yield* ctx.observe(sessionId);
               // The changed rows already show the result; don't echo the toggle.
               return { type: "done" } satisfies WhistleCatalogStepV1;
+            }),
+          answerChild: ({ sessionId, input }) =>
+            Effect.gen(function* () {
+              const roster = rosters.get(ctx);
+              const row = roster?.child(
+                sessionId,
+                input.agentId,
+                input.sessionId,
+              );
+              if (roster === undefined || row?.ask === undefined)
+                return done({
+                  type: "info",
+                  message: "That question is no longer waiting.",
+                });
+              const outcome = yield* advanceAnswerFlow(
+                { ...row.ask, closed: false },
+                input,
+              );
+              if (outcome.type === "complete") {
+                roster.submit(sessionId, {
+                  agentId: input.agentId,
+                  sessionId: input.sessionId,
+                  askId: outcome.askId,
+                  requestId: outcome.requestId,
+                  answers: outcome.answers,
+                });
+                return done({
+                  type: "success",
+                  // The child's owner commits it; an answer that loses the race changes nothing.
+                  message: `Sending your answer to ${row.name}.`,
+                });
+              }
+              const step = outcome.step;
+              // Each prompt continues here, naming the child it is for, and
+              // says whose question it is: the composer shows only the prompt.
+              return step.type === "prompt"
+                ? {
+                    ...step,
+                    prompt: {
+                      ...step.prompt,
+                      summary:
+                        step.prompt.summary === undefined
+                          ? `${row.name} asks`
+                          : `${row.name} asks · ${step.prompt.summary}`,
+                    },
+                    next: {
+                      ...step.next,
+                      arguments: {
+                        ...step.next.arguments,
+                        agentId: input.agentId,
+                        sessionId: input.sessionId,
+                      },
+                    },
+                  }
+                : step;
             }),
         }),
       },

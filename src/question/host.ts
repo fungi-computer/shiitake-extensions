@@ -6,6 +6,8 @@ import {
   ExtensionCommandError,
   type RosteredExtensionV0,
   type ExtensionContextV0,
+  type ExtensionCommandCallerV0,
+  AttentionRecipientSchema,
   type SettledRunV0,
 } from "@fungi.computer/shiitake/extensions";
 import * as Clock from "effect/Clock";
@@ -14,32 +16,42 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import Papa from "papaparse";
-import { titleLimit } from "../internal/headline.js";
-import { ask, catalog, done, freshRequestId } from "../internal/catalog.js";
+import { catalog, done } from "../internal/catalog.js";
 import {
   questionContract,
   OpenAsk,
   Questions,
   Answers,
   HumanResult,
+  AgentAnswerResult,
+  AnsweredBy,
+  EscalateResult,
   type AnswerInput,
   DeclineInput,
   ClosedStatus,
   AnswerFlowInput,
 } from "./contract.js";
+import { advanceAnswerFlow, type FlowInput } from "./answer-flow.js";
 
 const config = {
   maximumOpen: 4,
   liveWindowMs: 600_000,
+  // No Agent holds a routed ask forever: past this a person decides.
+  routedEscalationMs: 900_000,
+  routesToSender: false,
   idle: "Need a person's decision? forage.describe({path:'question'}) first.",
   guide:
     "Question tools: ask, withdraw. Use question.ask for decisions that need a person's answer. Put the recommended option first; do not add Other, since free text is always available. Use credential tools for secrets. While a question is parked, finish independent work and end the turn.",
   askDescription:
-    "Ask a person one or more questions and wait for the answer; options follow the question module rules.",
+    "Ask a person one or more questions and wait for the answer; options follow the question module rules. When another Agent sent you this work, your question goes to that Agent first and always parks: end your turn, and its answer arrives as a follow-up.",
 };
 const Response = Schema.Union([
   Schema.Struct({ status: Schema.Literal("answered"), answers: Answers }),
+  Schema.Struct({
+    status: Schema.Literal("answered"),
+    answers: Answers,
+    answeredBy: AnsweredBy,
+  }),
   Schema.Struct({
     status: Schema.Literal("declined"),
     note: DeclineInput.fields.note,
@@ -57,6 +69,7 @@ const Response = Schema.Union([
 type Response = Schema.Schema.Type<typeof Response>;
 const AskRow = Schema.Struct({
   askId: OpenAsk.fields.askId,
+  waitingOn: Schema.optional(AttentionRecipientSchema),
   questions: Questions,
   status: OpenAsk.fields.status,
   createdAt: OpenAsk.fields.createdAt,
@@ -106,7 +119,7 @@ const Receipt = Schema.Struct({
   sessionId: Schema.String,
   requestId: Schema.String,
   payload: Schema.String,
-  result: HumanResult,
+  result: AgentAnswerResult,
 });
 const collections = {
   deliveries: defineCollection(
@@ -208,6 +221,8 @@ function closeAsk(
     if (toolCallId !== undefined) yield* recordDelivery(ctx, row, toolCallId);
     yield* ctx.state.asks.remove(row.askId);
     if (row.expiry !== null) yield* ctx.timers.cancel(`ask:${row.askId}`);
+    if (row.waitingOn !== undefined)
+      yield* ctx.timers.cancel(routeTimer(row.askId));
     yield* ctx.attention.clear(row.sessionId, row.askId);
     yield* ctx.observe(row.sessionId);
   });
@@ -349,13 +364,16 @@ function settle(ctx: Context, run: SettledRunV0) {
 }
 
 function project(row: AskRow): OpenAsk {
-  return {
+  const open: OpenAsk = {
     askId: row.askId,
     questions: row.questions,
     status: row.status,
     createdAt: row.createdAt,
     expiresAt: row.expiry?.at ?? null,
   };
+  return row.waitingOn === undefined
+    ? open
+    : { ...open, waitingOn: row.waitingOn };
 }
 const encoder = new TextEncoder();
 /** Keep every question and selection represented within the follow-up byte budget. */
@@ -372,7 +390,9 @@ function clip(text: string, budget: number): string {
 function responsePrompt(row: AskRow, response: Response): string {
   const prefix =
     response.status === "answered"
-      ? `Answer to ask ${row.askId}:\n`
+      ? "answeredBy" in response
+        ? `Answer from Agent ${response.answeredBy.agentId} to ask ${row.askId}:\n`
+        : `Answer to ask ${row.askId}:\n`
       : response.status === "declined"
         ? `Declined ask ${row.askId}:\n${response.note === undefined ? "" : `Note: ${clip(response.note, 2_048)}\n`}`
         : `Ask ${row.askId} expired; ${response.action === "stop" ? "do not proceed with this decision" : "recommended default"}:\n`;
@@ -419,6 +439,8 @@ function deliverResponse(ctx: Context, row: AskRow, response: Response) {
         requireExistingSession: true,
         when: "now",
         correlation: row.askId,
+        // The continued work keeps its sender, so a second question still waits on that Agent.
+        continuesWorkId: row.workId,
         prompt: {
           text: responsePrompt(row, response),
           requestId: `ask:${row.askId}`,
@@ -446,7 +468,11 @@ function deliverResponse(ctx: Context, row: AskRow, response: Response) {
       delivered.status === "sent" ? delivered.workId : null,
     );
     return delivered.status === "sent"
-      ? { result: "accepted" as const, via: "follow_up" as const }
+      ? {
+          result: "accepted" as const,
+          via: "follow_up" as const,
+          commandId: delivered.workId,
+        }
       : { result: "closed" as const, status: "undeliverable" as const };
   });
 }
@@ -468,6 +494,13 @@ function expireAsk(ctx: Context, row: AskRow, now: number) {
   return Effect.gen(function* () {
     if (row.expiry === null || now < row.expiry.at || row.pending !== null)
       return undefined;
+    if (row.waitingOn !== undefined) {
+      // Nobody answered in time. A person decides next; the default never
+      // stands in for a decision no person has seen.
+      yield* ctx.timers.cancel(`ask:${row.askId}`);
+      yield* escalateAsk(ctx, { ...row, expiry: null });
+      return undefined;
+    }
     const response: Response =
       row.expiry.action === "stop"
         ? { status: "expired", action: "stop" }
@@ -491,7 +524,10 @@ function expireAsk(ctx: Context, row: AskRow, now: number) {
 }
 
 type ResponseInput =
-  ({ kind: "answer" } & AnswerInput) | ({ kind: "decline" } & DeclineInput);
+  | ({ kind: "answer" } & AnswerInput)
+  | ({ kind: "agent_answer"; caller: ExtensionCommandCallerV0 } & AnswerInput)
+  | ({ kind: "decline" } & DeclineInput);
+type ResponseResult = AgentAnswerResult;
 function validAnswers(
   questions: AskRow["questions"],
   values: AnswerInput["answers"],
@@ -516,15 +552,21 @@ function validAnswers(
 
 function responseIdentity(input: ResponseInput) {
   const response: Response =
-    input.kind === "answer"
-      ? { status: "answered", answers: input.answers }
+    input.kind === "answer" || input.kind === "agent_answer"
+      ? input.kind === "agent_answer"
+        ? {
+            status: "answered",
+            answers: input.answers,
+            answeredBy: { kind: "agent", agentId: input.caller.agentId },
+          }
+        : { status: "answered", answers: input.answers }
       : input.note === undefined
         ? { status: "declined" }
         : { status: "declined", note: input.note };
   const payload = JSON.stringify([
     input.kind,
     input.askId,
-    input.kind === "answer"
+    input.kind === "answer" || input.kind === "agent_answer"
       ? Object.entries(input.answers)
           .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
           .map(([id, answer]) => [
@@ -533,6 +575,9 @@ function responseIdentity(input: ResponseInput) {
             answer.text ?? null,
           ])
       : (input.note ?? null),
+    input.kind === "agent_answer"
+      ? [input.caller.agentId, input.caller.sessionId]
+      : null,
   ]);
   return { response, payload };
 }
@@ -557,7 +602,7 @@ function respond(ctx: Context, sessionId: string, input: ResponseInput) {
         );
       return prior.result;
     }
-    const record = (result: HumanResult) =>
+    const record = (result: ResponseResult) =>
       ctx.state.receipts
         .put({
           id: nanoid(),
@@ -580,7 +625,14 @@ function respond(ctx: Context, sessionId: string, input: ResponseInput) {
     const row = found.value;
     if (row.pending !== null)
       return yield* record({ result: "closed", status: row.pending.status });
-    if (input.kind === "answer") {
+    // A person may always answer; an Agent only when the ask waits on it.
+    if (
+      input.kind === "agent_answer" &&
+      !waitsOn(row, input.caller.agentId, input.caller.sessionId)
+    )
+      // A refusal changes nothing, so it must not spend the request id.
+      return { result: "refused", reason: "not_sender" } as const;
+    if (input.kind === "answer" || input.kind === "agent_answer") {
       const valid = validAnswers(row.questions, input.answers);
       if (!valid)
         return yield* Effect.fail(
@@ -592,6 +644,105 @@ function respond(ctx: Context, sessionId: string, input: ResponseInput) {
         );
     }
     return yield* record(yield* offerResponse(ctx, row, response));
+  });
+}
+
+/** Whether this ask waits on exactly this Agent Session. */
+function waitsOn(row: AskRow, agentId: string, sessionId: string): boolean {
+  return (
+    row.waitingOn?.agentId === agentId && row.waitingOn.sessionId === sessionId
+  );
+}
+
+function respondPerson(
+  ctx: Context,
+  sessionId: string,
+  input: Exclude<ResponseInput, { kind: "agent_answer" }>,
+) {
+  return respond(ctx, sessionId, input).pipe(
+    Effect.flatMap((result) =>
+      result.result === "refused"
+        ? Effect.fail(
+            new ExtensionCommandError({
+              reason: "rejected",
+              message: "A person's response cannot be refused",
+            }),
+          )
+        : Effect.succeed(result),
+    ),
+  );
+}
+
+/** The attention item for one open ask, waiting on an Agent or a person. */
+function askAttention(row: AskRow) {
+  const item = {
+    id: row.askId,
+    kind: "question" as const,
+    summary: row.questions.map((question) => question.header).join(", "),
+    since: row.createdAt,
+  };
+  const timed =
+    row.expiry === null ? item : { ...item, expiresAt: row.expiry.at };
+  return row.waitingOn === undefined
+    ? timed
+    : { ...timed, waitingOn: row.waitingOn };
+}
+
+/**
+ * The durable backstop of an ask that waits on an Agent. It is separate from
+ * the asker's own expiry, so it always hands the ask to a person and never
+ * applies a default answer.
+ */
+function routeTimer(askId: string): string {
+  return `route:${askId}`;
+}
+
+/** Hand an ask to a person: it stops waiting on any Agent and needs them. */
+function escalateAsk(ctx: Context, row: AskRow) {
+  return Effect.gen(function* () {
+    const moved: AskRow = { ...row, waitingOn: undefined };
+    yield* ctx.timers.cancel(routeTimer(row.askId));
+    yield* ctx.state.asks.put(moved);
+    yield* ctx.attention.set(row.sessionId, askAttention(moved));
+    yield* ctx.observe(row.sessionId);
+    return moved;
+  });
+}
+
+function escalateFromAgent(
+  ctx: Context,
+  sessionId: string,
+  askId: string,
+  caller: ExtensionCommandCallerV0,
+) {
+  return Effect.gen(function* () {
+    const found = yield* ctx.state.asks.get(askId);
+    if (Option.isNone(found) || found.value.sessionId !== sessionId) {
+      const closed = yield* ctx.state.closed.get(askId);
+      const missing: EscalateResult =
+        Option.isSome(closed) && closed.value.sessionId === sessionId
+          ? { result: "closed", status: closed.value.outcome.status }
+          : { result: "not_found" };
+      return missing;
+    }
+    const row = found.value;
+    if (row.pending !== null) {
+      const answered: EscalateResult = {
+        result: "closed",
+        status: row.pending.status,
+      };
+      return answered;
+    }
+    if (!waitsOn(row, caller.agentId, caller.sessionId)) {
+      const refused: EscalateResult = {
+        result: "refused",
+        reason: "not_sender",
+      };
+      return refused;
+    }
+    yield* escalateAsk(ctx, row);
+    const escalated: EscalateResult = { result: "escalated", to: "person" };
+    return escalated;
   });
 }
 
@@ -728,6 +879,14 @@ const ToolResult = z.union([
     status: z.literal("answered"),
     answers: toolAnswers,
   }),
+  z.strictObject({
+    status: z.literal("answered"),
+    answers: toolAnswers,
+    answeredBy: z.strictObject({
+      kind: z.literal("parent"),
+      agentId: z.string().min(1).max(256),
+    }),
+  }),
   z.strictObject({ status: z.literal("declined"), note: z.string() }),
   z.strictObject({ status: z.literal("declined") }),
   z.strictObject({ status: z.literal("expired"), action: z.literal("stop") }),
@@ -768,13 +927,6 @@ function withdraw(ctx: Context, sessionId: string, askId: string) {
   });
 }
 
-/** Drafts travel in catalog arguments; only respond commits an answer. */
-type FlowInput = Schema.Schema.Type<typeof AnswerFlowInput>;
-type FlowDraft = Pick<
-  Extract<FlowInput, { stage: "text" }>,
-  "askId" | "requestId" | "index" | "answers"
->;
-
 function answerNotice(result: HumanResult) {
   if (result.result === "accepted")
     return done({ type: "success", message: "Answer sent." });
@@ -789,146 +941,15 @@ function answerNotice(result: HumanResult) {
 
 function chooseQuestion(ctx: Context, sessionId: string, askId?: string) {
   return Effect.gen(function* () {
-    if (askId === undefined) {
-      const rows = (yield* ctx.state.asks.page({
-        index: sessionId,
-        limit: ctx.config.maximumOpen,
-      })).filter((row) => row.pending === null);
-      if (rows.length === 0)
-        return done({ type: "info", message: "No questions are waiting." });
-      if (rows.length > 1)
-        return ask(
-          {
-            type: "choice",
-            message: "Which question would you like to answer?",
-            options: rows.map((row) => ({
-              value: row.askId,
-              label: row.questions
-                .map((question) => question.header)
-                .join(" · "),
-            })),
-          },
-          {},
-          "askId",
-        );
-      const first = rows[0];
-      if (first === undefined) throw new Error("Expected the waiting question");
-      return { type: "selected" as const, askId: first.askId };
-    }
-    return { type: "selected" as const, askId };
+    if (askId !== undefined) return { type: "selected" as const, askId };
+    const first = (yield* ctx.state.asks.page({
+      index: sessionId,
+      limit: ctx.config.maximumOpen,
+    })).find((row) => row.pending === null);
+    return first === undefined
+      ? done({ type: "info", message: "No questions are waiting." })
+      : { type: "selected" as const, askId: first.askId };
   });
-}
-
-function multipleSelection(
-  question: AskRow["questions"][number],
-  selection: string,
-): Effect.Effect<string[], ExtensionCommandError> {
-  const parsed = Papa.parse<string[]>(selection, {
-    delimiter: ",",
-    skipEmptyLines: true,
-  });
-  const selected = parsed.data[0] ?? [];
-  const offered = new Set(question.options.map((option) => option.label));
-  if (
-    question.multiple !== true ||
-    parsed.errors.length > 0 ||
-    parsed.data.length > 1 ||
-    new Set(selected).size !== selected.length ||
-    selected.some((label) => !offered.has(label))
-  )
-    return Effect.fail(
-      new ExtensionCommandError({
-        reason: "invalid",
-        message:
-          "Enter offered labels once each as a comma list; quote labels containing commas",
-      }),
-    );
-  return Effect.succeed(selected);
-}
-
-function singleSelection(
-  question: AskRow["questions"][number],
-  selection: string,
-): Effect.Effect<string[], ExtensionCommandError> {
-  if (selection === "free_text") return Effect.succeed([]);
-  const option = question.options.find(
-    (option) => `option:${option.label}` === selection,
-  );
-  return option === undefined
-    ? Effect.fail(
-        new ExtensionCommandError({
-          reason: "invalid",
-          message: "Choose an offered option or free text",
-        }),
-      )
-    : Effect.succeed([option.label]);
-}
-
-/**
- * The Agent's own words are the title only when they fit one; a longer
- * question gets a plain title and sits in the body, whole in the details.
- */
-function questionHeading(question: AskRow["questions"][number]) {
-  const text = question.question.replace(/\s+/gu, " ").trim();
-  if (text.length <= titleLimit) return { message: text };
-  return {
-    message: "The Agent has a question",
-    body: question.question.slice(0, 4_000),
-    bodyLabel: "Question",
-    details: [{ label: "Question", value: question.question.slice(0, 4_000) }],
-  };
-}
-
-function promptQuestion(
-  nextQuestion: AskRow["questions"][number],
-  next: FlowDraft,
-) {
-  const heading = questionHeading(nextQuestion);
-  if (nextQuestion.multiple === true)
-    return ask(
-      {
-        type: "text",
-        ...heading,
-        summary: `Separate your picks with commas, or leave blank to write your own.${
-          nextQuestion.options.some((option) => option.label.includes(","))
-            ? " Put quotes around a pick that contains a comma."
-            : ""
-        }`,
-        facts: [
-          {
-            label: "Options",
-            value: nextQuestion.options
-              .map((option) => option.label)
-              .join(" · "),
-          },
-        ],
-        details: [
-          ...("details" in heading ? heading.details : []),
-          ...nextQuestion.options.map((option) => ({
-            label: option.label.slice(0, 200),
-            value: option.description,
-          })),
-        ].slice(0, 24),
-      },
-      { stage: "multiple", ...next },
-      "selection",
-    );
-  return ask(
-    {
-      type: "choice",
-      ...heading,
-      options: [
-        ...nextQuestion.options.map((option) => ({
-          value: `option:${option.label}`,
-          label: option.label,
-          description: option.description,
-        })),
-        { value: "free_text", label: "Write an answer" },
-      ],
-    },
-    { stage: "selection", ...next },
-    "selection",
-  );
 }
 
 function answerFlow(
@@ -965,81 +986,22 @@ function answerQuestion(
   input: FlowInput,
 ) {
   return Effect.gen(function* () {
-    const draft =
-      "stage" in input
-        ? input
-        : {
-            stage: "start" as const,
-            index: 0,
-            requestId: yield* freshRequestId,
-            answers: {},
-          };
-    let { index, answers } = draft;
-    const { requestId } = draft;
-    const question = row.questions[index];
-    if (question === undefined)
-      return yield* Effect.fail(
-        new ExtensionCommandError({
-          reason: "invalid",
-          message: "Unknown question step",
-        }),
-      );
-    let answer: AnswerInput["answers"][string] | undefined;
-    if (draft.stage === "text")
-      answer =
-        draft.text.length === 0
-          ? { selected: draft.selected }
-          : { selected: draft.selected, text: draft.text };
-    else if (draft.stage === "selection" || draft.stage === "multiple") {
-      const selected = yield* draft.stage === "multiple"
-        ? multipleSelection(question, draft.selection)
-        : singleSelection(question, draft.selection);
-      // A single choice is complete; only multiple selection and free text
-      // need an explicit submit.
-      if (draft.stage === "multiple" || selected.length === 0)
-        return ask(
-          {
-            type: "text",
-            message:
-              selected.length === 0
-                ? `Your answer for ${question.header}:`
-                : `Additional context for ${question.header} (leave blank to skip):`,
-          },
-          {
-            stage: "text",
-            askId: row.askId,
-            requestId,
-            index,
-            answers,
-            selected,
-          },
-          "text",
-        );
-      answer = { selected };
-    }
-    if (answer !== undefined) {
-      answers = { ...answers, [question.id]: answer };
-      index += 1;
-      if (index === row.questions.length) {
-        const result = yield* respond(ctx, sessionId, {
-          kind: "answer",
-          askId: row.askId,
-          requestId,
-          answers,
-        });
-        return answerNotice(result);
-      }
-    }
-    if (row.status === "settled" || row.pending !== null)
-      return done({
-        type: "info",
-        message: "That question is already closed.",
-      });
-    const next = { askId: row.askId, requestId, index, answers };
-    const nextQuestion = row.questions[index];
-    if (nextQuestion === undefined)
-      throw new Error("Expected the next question");
-    return promptQuestion(nextQuestion, next);
+    const outcome = yield* advanceAnswerFlow(
+      {
+        askId: row.askId,
+        questions: row.questions,
+        closed: row.status === "settled" || row.pending !== null,
+      },
+      input,
+    );
+    if (outcome.type === "step") return outcome.step;
+    const result = yield* respondPerson(ctx, sessionId, {
+      kind: "answer",
+      askId: outcome.askId,
+      requestId: outcome.requestId,
+      answers: outcome.answers,
+    });
+    return answerNotice(result);
   });
 }
 
@@ -1102,215 +1064,278 @@ function answerCatalog(available: boolean) {
             status: "unavailable",
             reason: "There is no waiting question to answer.",
           },
-      projections: {
-        slash: { aliases: ["answer"], order: 5 },
-        palette: { order: 5 },
-        help: { order: 5 },
-      },
     },
   ]);
 }
 
 /** One durable question owner over the ordinary extension doors. */
-export const questionExtension: RosteredExtensionV0 = defineExtension({
-  id: questionContract.id,
-  version: "1.0.0",
-})
-  .config(config)
-  .state({ version: 1, migrations: {}, collections })
-  .define({
-    catalog: answerCatalog(false),
-    attention: true,
-    timers: true,
-    hooks: {
-      onSettled: (ctx, page) =>
-        Effect.forEach(page, (run) => settle(ctx, run), { discard: true }),
-      onTimer: (ctx, timer) =>
-        Effect.gen(function* () {
-          if (!timer.key.startsWith("ask:")) return;
-          const row = yield* ctx.state.asks.get(timer.key.slice(4));
-          if (Option.isSome(row))
-            yield* expireAsk(ctx, row.value, timer.firedAt);
-        }),
-    },
-    prompt: (ctx) => [{ name: "question", text: ctx.config.idle }],
-    projection: {
-      schema: questionContract.projection.schema,
-      catalog: (value) => answerCatalog(value.asks.length > 0),
-      read: (ctx, sessionId) =>
-        Option.some({
-          asks: ctx.state.asks
-            .peekPage({ index: sessionId, limit: ctx.config.maximumOpen })
-            .filter((row) => row.pending === null)
-            .map(project),
-        }),
-    },
-    commands: {
-      specs: questionContract.commands,
-      handlers: (ctx) => ({
-        answerFlow: ({ sessionId, input }) => answerFlow(ctx, sessionId, input),
-        answer: ({ sessionId, input }) =>
-          respond(ctx, sessionId, { kind: "answer", ...input }),
-        decline: ({ sessionId, input }) =>
-          respond(ctx, sessionId, { kind: "decline", ...input }),
-        list: ({ sessionId }) =>
-          ctx.state.asks
-            .page({ index: sessionId, limit: ctx.config.maximumOpen })
-            .pipe(
-              Effect.map((rows) => ({
-                asks: rows.filter((row) => row.pending === null).map(project),
-              })),
-            ),
-      }),
-    },
-    tools: (ctx, { sessionId, workId }) => {
-      const runAttemptId = nanoid();
-      return Mycelium.module({
-        id: "botanical.session-question",
-        name: "question",
-        description: ctx.config.guide,
-        operations: {
-          withdraw: Mycelium.operation({
-            replay: "unsafe",
-            description:
-              "Withdraw a question that no longer needs a human answer. Repeating withdrawal preserves its closed outcome.",
-            input: z.strictObject({ askId: z.string().min(1).max(256) }),
-            output: WithdrawResult,
-            execute: async ({ askId }) =>
-              WithdrawResult.parse(
-                await Effect.runPromise(
-                  ctx.transact(withdraw(ctx, sessionId, askId)),
-                ),
-              ),
+export function questionExtensionFor(
+  routesToSender: boolean,
+): RosteredExtensionV0 {
+  const extensionConfig = { ...config, routesToSender };
+  return defineExtension({
+    id: questionContract.id,
+    version: "2.0.0",
+  })
+    .config(extensionConfig)
+    .state({ version: 1, migrations: {}, collections })
+    .define({
+      catalog: answerCatalog(false),
+      attention: true,
+      timers: true,
+      hooks: {
+        onSettled: (ctx, page) =>
+          Effect.forEach(page, (run) => settle(ctx, run), { discard: true }),
+        onTimer: (ctx, timer) =>
+          Effect.gen(function* () {
+            if (timer.key.startsWith("route:")) {
+              const row = yield* ctx.state.asks.get(timer.key.slice(6));
+              if (
+                Option.isSome(row) &&
+                row.value.waitingOn !== undefined &&
+                row.value.pending === null
+              )
+                yield* escalateAsk(ctx, row.value);
+              return;
+            }
+            if (!timer.key.startsWith("ask:")) return;
+            const row = yield* ctx.state.asks.get(timer.key.slice(4));
+            if (Option.isSome(row))
+              yield* expireAsk(ctx, row.value, timer.firedAt);
           }),
-          ask: Mycelium.operation({
-            replay: "unsafe",
-            description: ctx.config.askDescription,
-            input,
-            output: ToolResult,
-            execute: async (value, invocation) => {
-              const created = await Effect.runPromise(
-                ctx.transact(
-                  Effect.gen(function* () {
-                    const questions = yield* Schema.decodeUnknownEffect(
-                      Questions,
-                    )(value.questions).pipe(
-                      Effect.mapError(
-                        () =>
-                          new ExtensionCommandError({
-                            reason: "invalid",
-                            message:
-                              "Invalid question identifiers or option labels",
-                          }),
-                      ),
-                    );
-                    const digest = questionDigest(sessionId, workId, questions);
-                    const rows = yield* ctx.state.asks.page({
-                      index: sessionId,
-                      limit: ctx.config.maximumOpen,
-                    });
-                    const open = yield* Effect.forEach(rows, (row) =>
-                      row.workId === workId &&
-                      row.status === "live" &&
-                      row.runAttemptId !== runAttemptId
-                        ? parkAsk(ctx, row)
-                        : Effect.succeed(row),
-                    );
-                    const replay = yield* replayQuestion(
-                      ctx,
-                      open,
-                      workId,
-                      digest,
-                      invocation.toolCallId,
-                    );
-                    if (replay !== undefined) return replay;
-                    if (open.length === ctx.config.maximumOpen)
-                      return {
-                        status: "refused" as const,
-                        reason: "session_limit" as const,
-                        askIds: open.map((row) => row.askId),
-                      };
-                    const now = yield* Clock.currentTimeMillis;
-                    const window =
-                      invocation.deadlineAt === null
-                        ? 0
-                        : Math.max(
-                            0,
-                            Math.min(
-                              ctx.config.liveWindowMs,
-                              invocation.deadlineAt - now - deadlineReserveMs,
-                            ),
-                          );
-                    const live = value.mode === "wait" && window > 0;
-                    const existingLive = open.filter(
-                      (row) => row.workId === workId && row.status === "live",
-                    );
-                    if (live && existingLive.length > 0)
-                      return {
-                        status: "refused" as const,
-                        reason: "live_limit" as const,
-                        askIds: existingLive.map((row) => row.askId),
-                      };
-                    const row: AskRow = {
-                      askId: nanoid(),
-                      sessionId,
-                      workId,
-                      digest,
-                      questions,
-                      status: live ? "live" : "parked",
-                      runAttemptId: live ? runAttemptId : null,
-                      pending: null,
-                      createdAt: now,
-                      expiry:
-                        "onExpire" in value
-                          ? {
-                              at: now + value.onExpire.afterMinutes * 60_000,
-                              action: value.onExpire.action,
-                            }
-                          : null,
-                    };
-                    yield* ctx.state.asks.put(row);
-                    if (row.expiry !== null)
-                      yield* ctx.timers.set(`ask:${row.askId}`, row.expiry.at);
-                    const attention = {
-                      id: row.askId,
-                      kind: "question" as const,
-                      summary: questions
-                        .map((question) => question.header)
-                        .join(", "),
-                      since: now,
-                    };
-                    yield* ctx.attention.set(
-                      sessionId,
-                      row.expiry === null
-                        ? attention
-                        : { ...attention, expiresAt: row.expiry.at },
-                    );
-                    yield* ctx.observe(sessionId);
-                    return live
-                      ? {
-                          status: "waiting" as const,
-                          askId: row.askId,
-                          until: now + window,
-                        }
-                      : { status: "parked" as const, askId: row.askId };
+      },
+      prompt: (ctx) => [{ name: "question", text: ctx.config.idle }],
+      projection: {
+        schema: questionContract.projection.schema,
+        catalog: (value) => answerCatalog(value.asks.length > 0),
+        read: (ctx, sessionId) =>
+          Option.some({
+            asks: ctx.state.asks
+              .peekPage({ index: sessionId, limit: ctx.config.maximumOpen })
+              .filter((row) => row.pending === null)
+              .map(project),
+          }),
+      },
+      commands: {
+        specs: questionContract.commands,
+        handlers: (ctx) => ({
+          answerFlow: ({ sessionId, input }) =>
+            answerFlow(ctx, sessionId, input),
+          answer: ({ sessionId, input }) =>
+            respondPerson(ctx, sessionId, { kind: "answer", ...input }),
+          answerAgent: ({ sessionId, input, caller }) =>
+            caller === undefined
+              ? Effect.fail(
+                  new ExtensionCommandError({
+                    reason: "rejected",
+                    message:
+                      "Only an authenticated Agent can answer as an Agent",
                   }),
+                )
+              : respond(ctx, sessionId, {
+                  kind: "agent_answer",
+                  ...input,
+                  caller,
+                }).pipe(
+                  Effect.map((result) => ({
+                    result,
+                    answeredBy: {
+                      kind: "agent" as const,
+                      agentId: caller.agentId,
+                    },
+                  })),
                 ),
+          escalateAgent: ({ sessionId, input, caller }) =>
+            Effect.gen(function* () {
+              if (caller === undefined)
+                return yield* Effect.fail(
+                  new ExtensionCommandError({
+                    reason: "rejected",
+                    message: "Only an authenticated Agent can escalate an Ask",
+                  }),
+                );
+              return yield* escalateFromAgent(
+                ctx,
+                sessionId,
+                input.askId,
+                caller,
               );
-              const result =
-                created.status === "waiting"
-                  ? await waitForResponse(
-                      ctx,
-                      created.askId,
-                      created.until,
-                      invocation,
-                    )
-                  : created;
-              // Zod owns the JSON output representation, including mutable arrays.
-              return ToolResult.parse(result);
-            },
-          }),
-        },
-      });
-    },
-  });
+            }),
+          decline: ({ sessionId, input }) =>
+            respondPerson(ctx, sessionId, { kind: "decline", ...input }),
+          list: ({ sessionId }) =>
+            ctx.state.asks
+              .page({ index: sessionId, limit: ctx.config.maximumOpen })
+              .pipe(
+                Effect.map((rows) => ({
+                  asks: rows.filter((row) => row.pending === null).map(project),
+                })),
+              ),
+        }),
+      },
+      tools: (ctx, { sessionId, workId }) => {
+        const runAttemptId = nanoid();
+        return Mycelium.module({
+          id: "botanical.session-question",
+          name: "question",
+          description: ctx.config.guide,
+          operations: {
+            withdraw: Mycelium.operation({
+              replay: "unsafe",
+              description:
+                "Withdraw a question that no longer needs a human answer. Repeating withdrawal preserves its closed outcome.",
+              input: z.strictObject({ askId: z.string().min(1).max(256) }),
+              output: WithdrawResult,
+              execute: async ({ askId }) =>
+                WithdrawResult.parse(
+                  await Effect.runPromise(
+                    ctx.transact(withdraw(ctx, sessionId, askId)),
+                  ),
+                ),
+            }),
+            ask: Mycelium.operation({
+              replay: "unsafe",
+              description: ctx.config.askDescription,
+              input,
+              output: ToolResult,
+              execute: async (value, invocation) => {
+                const created = await Effect.runPromise(
+                  ctx.transact(
+                    Effect.gen(function* () {
+                      const questions = yield* Schema.decodeUnknownEffect(
+                        Questions,
+                      )(value.questions).pipe(
+                        Effect.mapError(
+                          () =>
+                            new ExtensionCommandError({
+                              reason: "invalid",
+                              message:
+                                "Invalid question identifiers or option labels",
+                            }),
+                        ),
+                      );
+                      const digest = questionDigest(
+                        sessionId,
+                        workId,
+                        questions,
+                      );
+                      const rows = yield* ctx.state.asks.page({
+                        index: sessionId,
+                        limit: ctx.config.maximumOpen,
+                      });
+                      const open = yield* Effect.forEach(rows, (row) =>
+                        row.workId === workId &&
+                        row.status === "live" &&
+                        row.runAttemptId !== runAttemptId
+                          ? parkAsk(ctx, row)
+                          : Effect.succeed(row),
+                      );
+                      const replay = yield* replayQuestion(
+                        ctx,
+                        open,
+                        workId,
+                        digest,
+                        invocation.toolCallId,
+                      );
+                      if (replay !== undefined) return replay;
+                      if (open.length === ctx.config.maximumOpen)
+                        return {
+                          status: "refused" as const,
+                          reason: "session_limit" as const,
+                          askIds: open.map((row) => row.askId),
+                        };
+                      const now = yield* Clock.currentTimeMillis;
+                      const window =
+                        invocation.deadlineAt === null
+                          ? 0
+                          : Math.max(
+                              0,
+                              Math.min(
+                                ctx.config.liveWindowMs,
+                                invocation.deadlineAt - now - deadlineReserveMs,
+                              ),
+                            );
+                      // The Agent that sent this work answers later; a live wait
+                      // would stall the turn it may itself be waiting on.
+                      const waitingOn = ctx.config.routesToSender
+                        ? yield* ctx.workSender({ sessionId, workId })
+                        : null;
+                      const live =
+                        value.mode === "wait" &&
+                        window > 0 &&
+                        waitingOn === null;
+                      const existingLive = open.filter(
+                        (row) => row.workId === workId && row.status === "live",
+                      );
+                      if (live && existingLive.length > 0)
+                        return {
+                          status: "refused" as const,
+                          reason: "live_limit" as const,
+                          askIds: existingLive.map((row) => row.askId),
+                        };
+                      const row: AskRow = {
+                        askId: nanoid(),
+                        waitingOn: waitingOn ?? undefined,
+                        sessionId,
+                        workId,
+                        digest,
+                        questions,
+                        status: live ? "live" : "parked",
+                        runAttemptId: live ? runAttemptId : null,
+                        pending: null,
+                        createdAt: now,
+                        expiry:
+                          "onExpire" in value
+                            ? {
+                                at: now + value.onExpire.afterMinutes * 60_000,
+                                action: value.onExpire.action,
+                              }
+                            : null,
+                      };
+                      yield* ctx.state.asks.put(row);
+                      if (row.expiry !== null)
+                        yield* ctx.timers.set(
+                          `ask:${row.askId}`,
+                          row.expiry.at,
+                        );
+                      // Whatever the asker chose, an ask nobody takes up reaches a person.
+                      if (row.waitingOn !== undefined)
+                        yield* ctx.timers.set(
+                          routeTimer(row.askId),
+                          now + ctx.config.routedEscalationMs,
+                        );
+                      yield* ctx.attention.set(sessionId, askAttention(row));
+                      yield* ctx.observe(sessionId);
+                      return live
+                        ? {
+                            status: "waiting" as const,
+                            askId: row.askId,
+                            until: now + window,
+                          }
+                        : { status: "parked" as const, askId: row.askId };
+                    }),
+                  ),
+                );
+                const result =
+                  created.status === "waiting"
+                    ? await waitForResponse(
+                        ctx,
+                        created.askId,
+                        created.until,
+                        invocation,
+                      )
+                    : created;
+                // Zod owns the JSON output representation, including mutable arrays.
+                return ToolResult.parse(result);
+              },
+            }),
+          },
+        });
+      },
+    });
+}
+
+/** Hub's shared roster sends every Ask to a person. */
+export const questionExtension = questionExtensionFor(false);
+/** Local's roster sends an Ask to the Agent that sent the asking work first. */
+export const localQuestionExtension = questionExtensionFor(true);

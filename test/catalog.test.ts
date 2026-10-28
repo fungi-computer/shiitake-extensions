@@ -66,7 +66,6 @@ it("advertises /goal and /loop from the backend, with their argument grammar", a
       ["goal", "botanical-session-goal:goal"],
       ["loop", "botanical-session-loop:loop"],
       ["plan", "botanical-session-plan:plan"],
-      ["answer", "botanical-session-question:answerFlow"],
     ]);
     expect(slash.find((row) => row.alias === "goal")?.arguments?.hint).toBe(
       "<objective>",
@@ -86,20 +85,26 @@ it("runs the /goal conversation on the server: ask, set, confirm a replacement",
   try {
     const first = answering(["Ship the fern"]);
     await expect(
-      client.runtime.execute("botanical-session-goal:goal", {
-        origin: "slash",
-        interaction: first.interaction,
-      }),
+      client.runtime.execute(
+        { namespace: "botanical-session-goal", id: "goal" },
+        {
+          origin: "slash",
+          interaction: first.interaction,
+        },
+      ),
     ).resolves.toMatchObject({ status: "handled" });
     expect(first.asked[0]).toMatchObject({ type: "text" });
     expect(first.notices).toEqual([]);
 
     const declined = answering([false]);
-    await client.runtime.execute("botanical-session-goal:goal", {
-      origin: "slash",
-      arguments: { action: "set", objective: "Plant moss", requestId: "r2" },
-      interaction: declined.interaction,
-    });
+    await client.runtime.execute(
+      { namespace: "botanical-session-goal", id: "goal" },
+      {
+        origin: "slash",
+        arguments: { action: "set", objective: "Plant moss", requestId: "r2" },
+        interaction: declined.interaction,
+      },
+    );
     expect(declined.asked[0]).toMatchObject({
       type: "confirmation",
       confirmLabel: "Replace and start",
@@ -107,18 +112,24 @@ it("runs the /goal conversation on the server: ask, set, confirm a replacement",
     expect(declined.notices).toEqual(["Kept the current goal."]);
 
     const replaced = answering([true]);
-    await client.runtime.execute("botanical-session-goal:goal", {
-      origin: "slash",
-      arguments: { action: "set", objective: "Plant moss", requestId: "r3" },
-      interaction: replaced.interaction,
-    });
+    await client.runtime.execute(
+      { namespace: "botanical-session-goal", id: "goal" },
+      {
+        origin: "slash",
+        arguments: { action: "set", objective: "Plant moss", requestId: "r3" },
+        interaction: replaced.interaction,
+      },
+    );
     expect(replaced.notices).toEqual([]);
 
     const controls = answering(["pause"]);
-    await client.runtime.execute("botanical-session-goal:goal", {
-      origin: "slash",
-      interaction: controls.interaction,
-    });
+    await client.runtime.execute(
+      { namespace: "botanical-session-goal", id: "goal" },
+      {
+        origin: "slash",
+        interaction: controls.interaction,
+      },
+    );
     expect(controls.asked[0]).toMatchObject({
       type: "choice",
       message: "Working on: Plant moss",
@@ -138,7 +149,7 @@ it("starts and controls /loop through typed text and words", async () => {
   const client = await openAdvertisedClient();
   try {
     const invalid = await client.runtime.execute(
-      "botanical-session-loop:loop",
+      { namespace: "botanical-session-loop", id: "loop" },
       {
         origin: "slash",
         arguments: { action: "start", text: "90m check", requestId: "l0" },
@@ -148,23 +159,32 @@ it("starts and controls /loop through typed text and words", async () => {
     expect(invalid).toMatchObject({ status: "failed" });
 
     const started = answering([]);
-    await client.runtime.execute("botanical-session-loop:loop", {
-      origin: "slash",
-      arguments: { action: "start", text: "5m check CI", requestId: "l1" },
-      interaction: started.interaction,
-    });
+    await client.runtime.execute(
+      { namespace: "botanical-session-loop", id: "loop" },
+      {
+        origin: "slash",
+        arguments: { action: "start", text: "5m check CI", requestId: "l1" },
+        interaction: started.interaction,
+      },
+    );
     expect(started.notices).toEqual(["Loop active (fixed interval): check CI"]);
     const paused = answering([]);
-    await client.runtime.execute("botanical-session-loop:loop", {
-      origin: "slash",
-      arguments: { action: "pause" },
-      interaction: paused.interaction,
-    });
+    await client.runtime.execute(
+      { namespace: "botanical-session-loop", id: "loop" },
+      {
+        origin: "slash",
+        arguments: { action: "pause" },
+        interaction: paused.interaction,
+      },
+    );
     expect(paused.notices).toEqual(["Loop paused (fixed interval): check CI"]);
     await expect(
-      client.runtime.execute("botanical-session-loop:loop", {
-        origin: "agent",
-      }),
+      client.runtime.execute(
+        { namespace: "botanical-session-loop", id: "loop" },
+        {
+          origin: "agent",
+        },
+      ),
     ).resolves.toMatchObject({
       status: "failed",
       error: { code: "interaction_required" },
@@ -177,11 +197,14 @@ it("starts and controls /loop through typed text and words", async () => {
 it("the footer's stop loop asks first, and Keep leaves the loop running", async () => {
   const client = await openAdvertisedClient();
   try {
-    await client.runtime.execute("botanical-session-loop:loop", {
-      origin: "slash",
-      arguments: { action: "start", text: "5m check CI", requestId: "f1" },
-      interaction: answering([]).interaction,
-    });
+    await client.runtime.execute(
+      { namespace: "botanical-session-loop", id: "loop" },
+      {
+        origin: "slash",
+        arguments: { action: "start", text: "5m check CI", requestId: "f1" },
+        interaction: answering([]).interaction,
+      },
+    );
     // The very action the loop's client advertises as its footer stop.
     const slot = (await client.session.read()).extensions[
       "botanical-session-loop"
@@ -194,11 +217,14 @@ it("the footer's stop loop asks first, and Keep leaves the loop running", async 
     expect(advertised.label).toBe("stop loop");
 
     const kept = answering([false]);
-    await client.runtime.execute("botanical-session-loop:loop", {
-      origin: "menu",
-      arguments: advertised.input,
-      interaction: kept.interaction,
-    });
+    await client.runtime.execute(
+      { namespace: "botanical-session-loop", id: "loop" },
+      {
+        origin: "menu",
+        arguments: advertised.input,
+        interaction: kept.interaction,
+      },
+    );
     expect(kept.asked).toMatchObject([
       {
         type: "confirmation",
@@ -210,11 +236,14 @@ it("the footer's stop loop asks first, and Keep leaves the loop running", async 
     ]);
     expect(kept.notices).toEqual(["Kept the loop."]);
     const status = answering([]);
-    await client.runtime.execute("botanical-session-loop:loop", {
-      origin: "slash",
-      arguments: { action: "status" },
-      interaction: status.interaction,
-    });
+    await client.runtime.execute(
+      { namespace: "botanical-session-loop", id: "loop" },
+      {
+        origin: "slash",
+        arguments: { action: "status" },
+        interaction: status.interaction,
+      },
+    );
     expect(status.notices[0]).toMatch(/^Loop active/u);
   } finally {
     await client.dispose();
@@ -225,18 +254,24 @@ it("/loop stops only after a safe-first confirmation", async () => {
   const client = await openAdvertisedClient();
   try {
     const prompt = `Check CI and fix what broke. ${"Then wait and look again. ".repeat(6)}`;
-    await client.runtime.execute("botanical-session-loop:loop", {
-      origin: "slash",
-      arguments: { action: "start", text: prompt, requestId: "s1" },
-      interaction: answering([]).interaction,
-    });
+    await client.runtime.execute(
+      { namespace: "botanical-session-loop", id: "loop" },
+      {
+        origin: "slash",
+        arguments: { action: "start", text: prompt, requestId: "s1" },
+        interaction: answering([]).interaction,
+      },
+    );
 
     // The menu's Stop only asks; the loop keeps running until the answer is yes.
     const kept = answering(["stop-ask", false]);
-    await client.runtime.execute("botanical-session-loop:loop", {
-      origin: "slash",
-      interaction: kept.interaction,
-    });
+    await client.runtime.execute(
+      { namespace: "botanical-session-loop", id: "loop" },
+      {
+        origin: "slash",
+        interaction: kept.interaction,
+      },
+    );
     expect(kept.asked[0]).toMatchObject({
       type: "choice",
       message: "Loop running: Check CI and fix what broke",
@@ -256,10 +291,13 @@ it("/loop stops only after a safe-first confirmation", async () => {
     expect(kept.notices).toEqual(["Kept the loop."]);
 
     const stopped = answering(["stop-ask", true]);
-    await client.runtime.execute("botanical-session-loop:loop", {
-      origin: "slash",
-      interaction: stopped.interaction,
-    });
+    await client.runtime.execute(
+      { namespace: "botanical-session-loop", id: "loop" },
+      {
+        origin: "slash",
+        interaction: stopped.interaction,
+      },
+    );
     expect(stopped.notices).toHaveLength(1);
     expect(stopped.notices[0]).toMatch(/^Loop cancelled/u);
   } finally {

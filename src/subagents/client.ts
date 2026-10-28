@@ -13,7 +13,8 @@ type PanelRow = ClientContributionV1["panel"][number];
 
 const presentation = {
   working: { label: "working", tone: "running", status: "info" },
-  waiting: { label: "waiting on you", tone: "attention", status: "warning" },
+  waiting_on_agent: { label: "waiting", tone: "muted", status: "neutral" },
+  needs_you: { label: "needs you", tone: "attention", status: "warning" },
   idle: { label: "idle", tone: "settled", status: "success" },
   failed: { label: "failed", tone: "error", status: "error" },
   unavailable: { label: "unavailable", tone: "muted", status: "neutral" },
@@ -26,28 +27,59 @@ const presentation = {
   }>
 >;
 
+/** "waiting on Shiitake": the Agent a calm child waits on, never "you". */
+function label(agent: Subagent): string {
+  return agent.state === "waiting_on_agent"
+    ? `waiting on ${agent.waitingOn ?? "its parent"}`
+    : presentation[agent.state].label;
+}
+
 function row(agent: Subagent): PanelRow {
   const shown = presentation[agent.state];
   const base: PanelRow = {
     id: agent.agentId,
-    title: `${agent.name} · ${shown.label}`,
+    title: `${agent.name} · ${label(agent)}`,
     tone: shown.tone,
-    status: { label: shown.label, tone: shown.status },
+    status: { label: label(agent), tone: shown.status },
   };
+  // The question itself, so a person can decide without opening the child.
+  const asked = agent.ask?.questions[0]?.question;
+  const text = asked ?? agent.attention;
   const detailed =
-    agent.attention === undefined ? base : { ...base, detail: agent.attention };
+    text === undefined ? base : { ...base, detail: text.slice(0, 200) };
   // An Agent created but never messaged has no conversation to open yet.
-  return agent.sessionId === null
-    ? { ...detailed, detail: agent.attention ?? "not messaged yet" }
-    : {
-        ...detailed,
-        open: {
-          params: [
-            { key: "agent", value: agent.agentId },
-            { key: "session", value: agent.sessionId },
-          ],
-        },
-      };
+  if (agent.sessionId === null)
+    return { ...detailed, detail: agent.attention ?? "not messaged yet" };
+  const opened = {
+    ...detailed,
+    open: {
+      params: [
+        { key: "agent", value: agent.agentId },
+        { key: "session", value: agent.sessionId },
+      ],
+    },
+  };
+  if (agent.ask === undefined) return opened;
+  const answer = {
+    id: "answerChild",
+    label: "Answer",
+    input: {
+      agentId: agent.agentId,
+      sessionId: agent.sessionId,
+      askId: agent.ask.askId,
+    },
+  };
+  // A question offers the one Answer action, calm or not: a person may always
+  // answer, and the first answer wins. Only a question that needs the person
+  // takes over the composer.
+  return {
+    ...opened,
+    actions: [
+      agent.state === "needs_you"
+        ? { ...answer, awaiting: "question" as const }
+        : answer,
+    ],
+  };
 }
 
 /**
@@ -58,13 +90,30 @@ function row(agent: Subagent): PanelRow {
 function summary(view: SubagentsProjection): PanelRow {
   const count = (state: SubagentState) =>
     view.agents.filter((agent) => agent.state === state).length;
-  const counts = (["working", "waiting", "failed", "unavailable"] as const)
-    .map((state) => [state, count(state)] as const)
-    .filter(([, n]) => n > 0)
-    .map(([state, n]) => `${String(n)} ${presentation[state].label}`);
+  const calm = view.agents.filter(
+    (agent) => agent.state === "waiting_on_agent",
+  );
+  // Calm children name who they wait on; only needs-you children are amber.
+  const waiting = [
+    ...new Set(calm.map((agent) => agent.waitingOn ?? "its parent")),
+  ].map(
+    (name) =>
+      `${String(calm.filter((agent) => (agent.waitingOn ?? "its parent") === name).length)} waiting on ${name}`,
+  );
+  const counts = [
+    ...(["working"] as const)
+      .map((state) => [state, count(state)] as const)
+      .filter(([, n]) => n > 0)
+      .map(([state, n]) => `${String(n)} ${presentation[state].label}`),
+    ...waiting,
+    ...(["needs_you", "failed", "unavailable"] as const)
+      .map((state) => [state, count(state)] as const)
+      .filter(([, n]) => n > 0)
+      .map(([state, n]) => `${String(n)} ${presentation[state].label}`),
+  ];
   const total = view.agents.length + view.more;
   const tone: PanelRow["tone"] =
-    count("waiting") > 0
+    count("needs_you") > 0
       ? "attention"
       : count("failed") > 0
         ? "error"

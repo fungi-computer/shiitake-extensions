@@ -1,58 +1,7 @@
-import { catalogCommands, parseCatalog } from "@fungi.computer/whistle/catalog";
-import {
-  createWhistle,
-  type WhistlePrompt,
-  type WhistleInteraction,
-} from "@fungi.computer/whistle";
-import { parsePromptAnswer } from "@fungi.computer/whistle/wire";
+import { parseCatalog } from "@fungi.computer/whistle/catalog";
 import { expect, it } from "vitest";
 import { questionHost, questions } from "./fixtures/ask.js";
-
-async function answerThroughCatalog(
-  fixture: Awaited<ReturnType<typeof questionHost>>,
-  scripted: string[],
-) {
-  const session = fixture.host.session("questions");
-  const runtime = createWhistle();
-  const snapshot = await session.read();
-  for (const [id, slot] of Object.entries(snapshot.extensions)) {
-    if (slot.status !== "running" || slot.catalog === undefined) continue;
-    runtime.contribute({
-      sourceId: id,
-      namespace: id,
-      commands: catalogCommands(parseCatalog(slot.catalog), (command, args) =>
-        session.extension(id).call(command, args),
-      ),
-    });
-  }
-  const command = runtime
-    .snapshot()
-    .slash.find(({ alias }) => alias === "answer");
-  expect(command).toBeDefined();
-  if (command === undefined) throw new Error("Missing /answer catalog command");
-  const prompts: WhistlePrompt[] = [];
-  const notices: string[] = [];
-  const interaction: WhistleInteraction = {
-    run: (operation) => operation(),
-    signal: new AbortController().signal,
-    prompt: (prompt) => {
-      prompts.push(prompt);
-      const reply = scripted.shift();
-      if (reply === undefined) throw new Error("Unexpected question prompt");
-      return Promise.resolve(parsePromptAnswer(prompt, reply));
-    },
-    notify: (notice) => {
-      if (notice.type !== "handoff") notices.push(notice.message);
-    },
-  };
-  expect(
-    await runtime.execute(command.commandId, {
-      origin: "slash",
-      interaction,
-    }),
-  ).toMatchObject({ status: "handled" });
-  return { prompts, notices };
-}
+import { answerThroughCatalog } from "./fixtures/answer-through-catalog.js";
 
 it("answers a parked question through the advertised /answer conversation", async () => {
   const fixture = await questionHost();
@@ -72,17 +21,17 @@ it("answers a parked question through the advertised /answer conversation", asyn
     const { askId } = await fixture.park();
     expect(await answerAvailability()).toEqual({ status: "available" });
     const { prompts, notices } = await answerThroughCatalog(fixture, [
-      "option:SQLite",
+      { selected: ["SQLite"] },
     ]);
     expect(prompts).toMatchObject([
       {
-        type: "choice",
+        type: "decision",
         message: "Which store should hold the notes?",
         options: [
-          { value: "option:SQLite", label: "SQLite" },
-          { value: "option:PostgreSQL", label: "PostgreSQL" },
-          { value: "free_text" },
+          { value: "SQLite", label: "SQLite" },
+          { value: "PostgreSQL", label: "PostgreSQL" },
         ],
+        other: { label: "Other…" },
       },
     ]);
     expect(notices).toEqual(["Answer sent."]);
@@ -104,7 +53,7 @@ it("answers a parked question through the advertised /answer conversation", asyn
   }
 });
 
-it("collects quoted multiple selections and free text across every question", async () => {
+it("collects a multiple pick and a written answer across every question", async () => {
   const fixture = await questionHost({
     mode: "continue",
     questions: [
@@ -124,27 +73,32 @@ it("collects quoted multiple selections and free text across every question", as
   try {
     await fixture.park();
     const { prompts, notices } = await answerThroughCatalog(fixture, [
-      '"Docs, examples",Tests',
-      "Ship together.",
-      "free_text",
-      "Use a local file for now.",
+      { selected: ["Docs, examples", "Tests"], text: "Ship together." },
+      { selected: [], text: "Use a local file for now." },
     ]);
     expect(prompts.map((prompt) => prompt.type)).toEqual([
-      "text",
-      "text",
-      "choice",
-      "text",
+      "decision",
+      "decision",
     ]);
-    // The options are shown as a list, never pasted into the title.
+    // The options are rows with their own descriptions, never pasted into the title.
     expect(prompts[0]).toEqual({
-      type: "text",
+      type: "decision",
       message: "Which deliverables should ship?",
-      summary: `Separate your picks with commas, or leave blank to write your own. Put quotes around a pick that contains a comma.`,
-      facts: [{ label: "Options", value: "Docs, examples · Tests" }],
-      details: [
-        { label: "Docs, examples", value: "Explain usage." },
-        { label: "Tests", value: "Verify behavior." },
+      summary: "Question 1 of 2",
+      options: [
+        {
+          value: "Docs, examples",
+          label: "Docs, examples",
+          description: "Explain usage.",
+        },
+        { value: "Tests", label: "Tests", description: "Verify behavior." },
       ],
+      multiple: true,
+      other: {
+        label: "Other…",
+        placeholder: "Write your own answer",
+        maxLength: 4_000,
+      },
     });
     expect(notices).toEqual(["Answer sent."]);
     const snapshot = await fixture.host.session("questions").read();
@@ -179,14 +133,17 @@ it("advances earlier single choices and submits the last question immediately", 
   try {
     await fixture.park();
     const { prompts, notices } = await answerThroughCatalog(fixture, [
-      "option:SQLite",
-      "option:Local",
+      { selected: ["SQLite"] },
+      { selected: ["Local"] },
     ]);
     expect(prompts.map((prompt) => prompt.message)).toEqual([
       "Which store should hold the notes?",
       "Which scope?",
     ]);
-    expect(prompts.map((prompt) => prompt.type)).toEqual(["choice", "choice"]);
+    expect(prompts.map((prompt) => prompt.type)).toEqual([
+      "decision",
+      "decision",
+    ]);
     expect(notices).toEqual(["Answer sent."]);
     const snapshot = await fixture.host.session("questions").read();
     expect(snapshot.attention).toEqual([]);
@@ -199,39 +156,38 @@ it("advances earlier single choices and submits the last question immediately", 
   }
 });
 
-it.each(["SQLite,SQLite", "Unknown", '"SQLite', "SQLite\nPostgreSQL"])(
-  "rejects invalid multi-selection %s without closing the question",
-  async (selection) => {
+it.each([
+  { multiple: true, answer: { selected: ["SQLite", "SQLite"] } },
+  { multiple: true, answer: { selected: ["Unknown"] } },
+  { multiple: true, answer: { selected: [] } },
+  { multiple: false, answer: { selected: ["SQLite", "PostgreSQL"] } },
+])(
+  "rejects the invalid decision answer $answer without closing the question",
+  async ({ multiple, answer: invalid }) => {
     const fixture = await questionHost({
       mode: "continue",
-      questions: questions.map((question) => ({ ...question, multiple: true })),
+      questions: questions.map((question) => ({ ...question, multiple })),
     });
     try {
       const { askId } = await fixture.park();
       const session = fixture.host.session("questions");
       const answer = session.extension("botanical-session-question");
       const draft = {
+        stage: "decision" as const,
         askId,
         requestId: "retry-selection",
         index: 0,
         answers: {},
       };
       await expect(
-        answer.call("answerFlow", { stage: "multiple", ...draft, selection }),
-      ).rejects.toThrow("comma list");
+        answer.call("answerFlow", { ...draft, answer: invalid }),
+      ).rejects.toThrow("Choose offered options");
       expect(
         (await session.read()).extensions["botanical-session-question"],
       ).toMatchObject({ status: "running", value: { asks: [{ askId }] } });
       await answer.call("answerFlow", {
-        stage: "multiple",
         ...draft,
-        selection: "SQLite",
-      });
-      await answer.call("answerFlow", {
-        stage: "text",
-        ...draft,
-        selected: ["SQLite"],
-        text: "",
+        answer: { selected: ["SQLite"] },
       });
       const snapshot = await session.read();
       expect(snapshot.attention).toEqual([]);
@@ -261,9 +217,11 @@ it("a long Agent question gets a plain title and sits in the body", async () => 
   });
   try {
     await fixture.park();
-    const { prompts } = await answerThroughCatalog(fixture, ["option:SQLite"]);
+    const { prompts } = await answerThroughCatalog(fixture, [
+      { selected: ["SQLite"] },
+    ]);
     expect(prompts[0]).toMatchObject({
-      type: "choice",
+      type: "decision",
       message: "The Agent has a question",
       bodyLabel: "Question",
       body: long,

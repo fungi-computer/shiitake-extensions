@@ -16,4 +16,34 @@
 const questionExtension: RosteredExtensionV0;
 ```
 
+Hub's shared roster sends every Ask to a person.
+
+---
+
+### localQuestionExtension
+
+```ts
+const localQuestionExtension: RosteredExtensionV0;
+```
+
+Local's roster sends an Ask to the Agent that sent the asking work first.
+
+## Functions
+
+### questionExtensionFor()
+
+```ts
+function questionExtensionFor(routesToSender): RosteredExtensionV0;
+```
+
 One durable question owner over the ordinary extension doors.
+
+#### Parameters
+
+| Parameter        | Type      |
+| ---------------- | --------- |
+| `routesToSender` | `boolean` |
+
+#### Returns
+
+`RosteredExtensionV0`

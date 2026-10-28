@@ -54,13 +54,21 @@ The most Agents one conversation's footer lists; the rest are counted.
 
 ```ts
 const SubagentState: Literals<
-  readonly ["working", "waiting", "idle", "failed", "unavailable"]
+  readonly [
+    "working",
+    "waiting_on_agent",
+    "needs_you",
+    "idle",
+    "failed",
+    "unavailable",
+  ]
 >;
 ```
 
-What the human sees for one ordinary created Agent. `waiting` is any open
-attention on its conversation (a question or a tool approval); `unavailable`
-means its status could not be read, and is never shown as idle.
+What the human sees for one ordinary created Agent. `waiting_on_agent` is an
+open question that waits on the Agent that sent the work, calm until it is
+escalated; `needs_you` is attention that waits on a person; `unavailable` means
+its status could not be read, and is never shown as idle.
 
 ---
 
@@ -71,10 +79,22 @@ const Subagent: Struct<{
   agentId: String;
   name: String;
   sessionId: NullOr<String>;
-  state: Literals<
-    readonly ["working", "waiting", "idle", "failed", "unavailable"]
-  >;
+  state: Literals<readonly ["working", "waiting_on_agent", "needs_you", "idle", "failed", "unavailable"]>;
   attention: optionalKey<String>;
+  waitingOn: optionalKey<String>;
+  ask: optionalKey<Struct<{
+     askId: String;
+     questions: $Array<Struct<{
+        id: String;
+        header: String;
+        question: String;
+        options: $Array<Struct<{
+           label: ...;
+           description: ...;
+        }>>;
+        multiple: optionalKey<Boolean>;
+     }>>;
+  }>>;
 }>;
 ```
 
@@ -87,17 +107,24 @@ work.
 
 ```ts
 const SubagentsProjection: Struct<{
-  agents: $Array<
-    Struct<{
-      agentId: String;
-      name: String;
-      sessionId: NullOr<String>;
-      state: Literals<
-        readonly ["working", "waiting", "idle", "failed", "unavailable"]
-      >;
-      attention: optionalKey<String>;
-    }>
-  >;
+  agents: $Array<Struct<{
+     agentId: String;
+     name: String;
+     sessionId: NullOr<String>;
+     state: Literals<readonly ["working", "waiting_on_agent", "needs_you", "idle", "failed", "unavailable"]>;
+     attention: optionalKey<String>;
+     waitingOn: optionalKey<String>;
+     ask: optionalKey<Struct<{
+        askId: String;
+        questions: $Array<Struct<{
+           id: ...;
+           header: ...;
+           question: ...;
+           options: ...;
+           multiple: ...;
+        }>>;
+     }>>;
+  }>>;
   more: Int;
   expanded: Boolean;
 }>;
@@ -106,6 +133,48 @@ const SubagentsProjection: Struct<{
 This Agent's created Agents and how many are not listed. `expanded` is whether
 the footer lists each one; a person toggles it with `/agents`, and a collapsed
 footer keeps one summary row.
+
+---
+
+### AnswerChildInput
+
+```ts
+const AnswerChildInput: Union<
+  Struct<
+    | {
+        askId: String;
+        requestId: String;
+        index: Number;
+        answers: $Record<
+          String,
+          Struct<{
+            selected: $Array<String>;
+            text: optionalKey<String>;
+          }>
+        >;
+        stage: Literal<"decision">;
+        answer: Struct<{
+          selected: $Array<String>;
+          text: optionalKey<String>;
+        }>;
+        agentId: String;
+        sessionId: String;
+      }
+    | {
+        askId: String;
+        agentId: String;
+        sessionId: String;
+      }
+    | {
+        agentId: String;
+        sessionId: String;
+      }
+  >[]
+>;
+```
+
+The question flow's own steps, each naming the child whose Ask they answer. The
+footer owns the conversation; the child's question owner commits it.
 
 ---
 
@@ -119,13 +188,17 @@ Created-Agent footer control and its visible projection.
 
 #### Type Declaration
 
-| Name                                          | Type                                                                                                                                                                                                                                                                                                                    | Default value         | Description                                                            |
-| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- | ---------------------------------------------------------------------- |
-| <a id="property-id"></a> `id`                 | `string` & `Brand`\<`"ExtensionId"`\>                                                                                                                                                                                                                                                                                   | -                     | Stable extension identity.                                             |
-| <a id="property-commands"></a> `commands`     | `object`                                                                                                                                                                                                                                                                                                                | -                     | Human footer controls.                                                 |
-| `commands.agents`                             | `object`                                                                                                                                                                                                                                                                                                                | -                     | Toggle the created-Agent footer between expanded and summarized views. |
-| `commands.agents.scope`                       | `"session"`                                                                                                                                                                                                                                                                                                             | `"session"`           | The Session owns its footer view.                                      |
-| `commands.agents.input`                       | `Struct`\<\{ \}\>                                                                                                                                                                                                                                                                                                       | -                     | No additional arguments are required.                                  |
-| `commands.agents.output`                      | `declare`\<`WhistleCatalogStepV1`, `WhistleCatalogStepV1`\>                                                                                                                                                                                                                                                             | `CatalogStep`         | Return the server-owned human control step.                            |
-| <a id="property-projection"></a> `projection` | `object`                                                                                                                                                                                                                                                                                                                | -                     | Footer rows and expansion state.                                       |
-| `projection.schema`                           | `Struct`\<\{ `agents`: `$Array`\<`Struct`\<\{ `agentId`: `String`; `name`: `String`; `sessionId`: `NullOr`\<`String`\>; `state`: `Literals`\<readonly \[`"working"`, `"waiting"`, `"idle"`, `"failed"`, `"unavailable"`\]\>; `attention`: `optionalKey`\<`String`\>; \}\>\>; `more`: `Int`; `expanded`: `Boolean`; \}\> | `SubagentsProjection` | Decoder for the projected footer.                                      |
+| Name                                          | Type                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Default value         | Description                                                            |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- | ---------------------------------------------------------------------- |
+| <a id="property-id"></a> `id`                 | `string` & `Brand`\<`"ExtensionId"`\>                                                                                                                                                                                                                                                                                                                                                                                                                                                   | -                     | Stable extension identity.                                             |
+| <a id="property-commands"></a> `commands`     | `object`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | -                     | Human footer controls.                                                 |
+| `commands.agents`                             | `object`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | -                     | Toggle the created-Agent footer between expanded and summarized views. |
+| `commands.agents.scope`                       | `"session"`                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | `"session"`           | The Session owns its footer view.                                      |
+| `commands.agents.input`                       | `Struct`\<\{ \}\>                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | -                     | No additional arguments are required.                                  |
+| `commands.agents.output`                      | `declare`\<`WhistleCatalogStepV1`, `WhistleCatalogStepV1`\>                                                                                                                                                                                                                                                                                                                                                                                                                             | `CatalogStep`         | Return the server-owned human control step.                            |
+| `commands.answerChild`                        | `object`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | -                     | Answer a question an escalated sub-agent asks, from this conversation. |
+| `commands.answerChild.scope`                  | `"session"`                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | `"session"`           | The Session owns its footer.                                           |
+| `commands.answerChild.input`                  | `Union`\<`Struct`\< \| \{ `askId`: `String`; `requestId`: `String`; `index`: `Number`; `answers`: `$Record`\<`String`, `Struct`\<\{ `selected`: ...; `text`: ...; \}\>\>; `stage`: `Literal`\<`"decision"`\>; `answer`: `Struct`\<\{ `selected`: `$Array`\<...\>; `text`: `optionalKey`\<...\>; \}\>; `agentId`: `String`; `sessionId`: `String`; \} \| \{ `askId`: `String`; `agentId`: `String`; `sessionId`: `String`; \} \| \{ `agentId`: `String`; `sessionId`: `String`; \}\>[]\> | `AnswerChildInput`    | The next step of the child's answer conversation.                      |
+| `commands.answerChild.output`                 | `declare`\<`WhistleCatalogStepV1`, `WhistleCatalogStepV1`\>                                                                                                                                                                                                                                                                                                                                                                                                                             | `CatalogStep`         | Return the next human conversation step.                               |
+| <a id="property-projection"></a> `projection` | `object`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | -                     | Footer rows and expansion state.                                       |
+| `projection.schema`                           | `Struct`\<\{ `agents`: `$Array`\<`Struct`\<\{ `agentId`: `String`; `name`: `String`; `sessionId`: `NullOr`\<`String`\>; `state`: `Literals`\<readonly \[`"working"`, `"waiting_on_agent"`, `"needs_you"`, `"idle"`, `"failed"`, `"unavailable"`\]\>; `attention`: `optionalKey`\<`String`\>; `waitingOn`: `optionalKey`\<`String`\>; `ask`: `optionalKey`\<`Struct`\<\{ `askId`: `String`; `questions`: `$Array`\<...\>; \}\>\>; \}\>\>; `more`: `Int`; `expanded`: `Boolean`; \}\>     | `SubagentsProjection` | Decoder for the projected footer.                                      |

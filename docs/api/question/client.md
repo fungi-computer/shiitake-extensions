@@ -22,4 +22,5 @@ default: Readonly<{
 }>;
 ```
 
-Pending decisions use the existing footer rows and advertised answer flow.
+Pending decisions take over the composer; the footer row is where a postponed
+one waits.

@@ -1,6 +1,8 @@
 import { expect, it } from "vitest";
 import * as Schema from "effect/Schema";
 import { clientContributionSchemaV1 } from "@fungi.computer/shiitake/client-entry";
+import { questionHost } from "./fixtures/ask.js";
+import { answerThroughCatalog } from "./fixtures/answer-through-catalog.js";
 import questionClient from "../src/question/client.js";
 import { AskProjection } from "../src/question/contract.js";
 
@@ -15,6 +17,7 @@ const question = {
 };
 const ask = (askId: string) => ({
   askId,
+
   questions: [question],
   status: "parked" as const,
   createdAt: 1,
@@ -43,7 +46,12 @@ it("publishes pending questions as footer rows with their existing advertised an
       detail: "Blue · Green",
       tone: "attention",
       actions: [
-        { id: "answerFlow", label: "Answer", input: { askId: "ask-one" } },
+        {
+          id: "answerFlow",
+          label: "Answer",
+          input: { askId: "ask-one" },
+          awaiting: "question",
+        },
       ],
     },
   ]);
@@ -67,4 +75,22 @@ it("contributes nothing before observation or after detach", () => {
       reason: "Detached",
     }).panel,
   ).toEqual([]);
+});
+
+it("a multiple question is one decision prompt", async () => {
+  const fixture = await questionHost({
+    mode: "continue",
+    questions: [{ ...question, multiple: true }],
+  });
+  try {
+    await fixture.park();
+    const { prompts } = await answerThroughCatalog(fixture, [
+      { selected: ["Blue", "Green"] },
+    ]);
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toMatchObject({ type: "decision", multiple: true });
+  } finally {
+    await fixture.host.close();
+    fixture.store.close();
+  }
 });

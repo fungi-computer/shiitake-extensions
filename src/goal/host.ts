@@ -58,18 +58,23 @@ const rules =
 /** Hashed prose and policy: every constant goal reads comes from here. */
 const config = {
   continuation:
-    "Continue working toward the current goal described in the goal section. Find goal.get_goal and goal.update_goal with forage.search({query:'goal'}) and forage.describe. Audit every requirement against evidence before goal.update_goal({status:'complete', reason}). If the same external blocker persists for three goal turns, report blocked with a reason. Check for progress rather than repeating yourself.",
+    "Continue working toward the current goal described in the goal section. Find goal.get_goal and goal.update_goal with forage.search({query:'goal'}) and forage.describe. Audit every requirement against evidence before goal.update_goal({status:'complete', reason}). If the same external blocker persists for three goal turns, report blocked with a reason. Check for progress rather than repeating yourself. If there is nothing to do until something outside this turn happens (a child's reply, a person, the train, main), call goal.wait({reason, fallbackMinutes}) and end the turn instead of polling.",
   moduleDescription:
-    "Session goal tools: create_goal({objective}), get_goal({}), update_goal({status:'complete'|'blocked'|'clear'|'resume', reason}). " +
+    "Session goal tools: create_goal({objective}), get_goal({}), update_goal({status:'complete'|'blocked'|'clear'|'resume', reason}), wait({reason, fallbackMinutes}). " +
     rules,
   createDescription:
-    "Create a Session goal, including autonomously. Fails while a goal is active or paused; a finished goal is history.",
+    "Create a Session goal, including autonomously. Fails while a goal is active or paused; a finished goal is history. After update_goal complete (or clear on a paused goal) in this same run, it queues the replacement, which takes over when this run settles.",
   getDescription:
     "Read the current goal. A requested terminal state remains provisional until successful settlement.",
   updateDescription:
     "Request complete only after actual achievement, or blocked only after the same external impasse for three consecutive goal turns; both also work on a paused goal, and settlement commits the request. Complete ends the goal; blocked pauses it for a person. clear abandons a paused goal with your reason. resume reactivates a paused goal now. A goal a person paused or stopped accepts only complete.",
   waitCheckMs: 60_000,
+  waitDescription:
+    "Say the goal is waiting on something outside this turn, then end the turn. The goal stays active and admits no goal turn and no stall count until another run in this Session settles (a child's reply, a person's message, a loop tick) or fallbackMinutes (default 20, 1 to 60) pass. Use it instead of polling.",
+  waitDefaultMinutes: 20,
+  waitMaxMinutes: 60,
   waitingSummary: "Waiting on sub-agent",
+  waitingOnSummary: "Waiting",
   promptLimit: 1_024,
   stallTurns: 3,
   stallReason: "Stalled: no progress for 3 turns",
@@ -115,6 +120,21 @@ const GoalRow = Schema.Struct({
     }),
   ),
   stalledTurns: Schema.Int,
+  /**
+   * The goal waits on something outside its turns. `until` is null while the
+   * requesting run is still running; its settlement fixes the fallback instant.
+   */
+  waiting: Schema.optionalKey(
+    Schema.NullOr(
+      Schema.Struct({
+        reason: GoalReason,
+        fallbackMs: Schema.Int,
+        until: Schema.NullOr(Schema.Int),
+      }),
+    ),
+  ),
+  /** A replacement objective queued after this run's complete or clear. */
+  successor: Schema.optionalKey(Schema.NullOr(Objective)),
   /** Request that set this revision; its retry replays. */
   revisionRequestId: Schema.String,
   /** Latest work whose settlement advances this goal. */
@@ -209,6 +229,8 @@ function paused(
     state: "paused",
     pauseCause: { kind, detail },
     pending: null,
+    waiting: null,
+    successor: null,
   };
 }
 
@@ -263,6 +285,7 @@ function changeActivity(
             state: "active",
             pauseCause: null,
             stalledTurns: 0,
+            waiting: null,
           }
         : paused(goal, "person", null);
     yield* commitGoal(ctx, changed);
@@ -335,29 +358,95 @@ function settle(ctx: Context, run: SettledRunV0, subagents?: SubagentSource) {
       );
       return yield* ctx.observe(run.sessionId);
     }
+    const goalTurn = run.origin?.extensionId === goalContract.id;
+    // A live child command or a question or approval a person has yet to
+    // answer is a legitimate wait, whether or not this turn polled.
     const waitingForChild =
-      run.toolCalls === 0 &&
-      subagents?.hasLiveChildCommand(run.sessionId) === true &&
-      run.origin?.extensionId === goalContract.id;
+      goalTurn &&
+      (subagents?.hasLiveChildCommand(run.sessionId) === true ||
+        (yield* ctx.attention.awaitsPerson(run.sessionId)));
+    const waiting = goal.waiting ?? null;
+    // The run that called goal.wait fixes the fallback instant as it settles.
+    const requested =
+      waiting !== null &&
+      waiting.until === null &&
+      run.workId === goal.trackedWorkId;
+    // Any other run that settles while a wait is armed wakes the goal.
+    const woken = waiting !== null && waiting.until !== null;
     const tracked: GoalRow = {
       ...goal,
       trackedWorkId: run.workId,
-      stalledTurns:
-        run.origin?.extensionId === goalContract.id &&
-        run.origin.correlation === goal.revision
+      stalledTurns: requested
+        ? goal.stalledTurns
+        : run.origin?.extensionId === goalContract.id &&
+            run.origin.correlation === goal.revision
           ? run.toolCalls === 0
             ? goal.stalledTurns + 1
             : 0
           : 0,
     };
     const pending = goal.trackedWorkId === run.workId ? goal.pending : null;
-    if (pending?.state === "complete")
-      yield* finishGoal(ctx, tracked, "achieved", pending.reason);
-    else if (pending?.state === "cleared")
-      yield* finishGoal(ctx, tracked, "cleared", pending.reason);
-    else if (pending?.state === "blocked")
+    if (pending?.state === "complete" || pending?.state === "cleared") {
+      yield* ctx.timers.cancel(waitTimerKey(run.sessionId));
+      yield* finishGoal(
+        ctx,
+        tracked,
+        pending.state === "complete" ? "achieved" : "cleared",
+        pending.reason,
+      );
+      if (goal.successor != null) {
+        const next: GoalRow = {
+          sessionId: run.sessionId,
+          objective: goal.successor,
+          state: "active",
+          startedAt: yield* Clock.currentTimeMillis,
+          pending: null,
+          stalledTurns: 0,
+          revision: `run:${run.workId}`,
+          revisionRequestId: `run:${run.workId}`,
+          trackedWorkId: run.workId,
+          pauseCause: null,
+          waiting: null,
+          successor: null,
+        };
+        yield* commitGoal(
+          ctx,
+          yield* continueIfIdle(ctx, next, `goal-continue:${run.workId}`),
+        );
+      }
+    } else if (pending?.state === "blocked")
       yield* commitGoal(ctx, paused(tracked, "blocked", pending.reason));
-    else if (
+    else if (goal.state === "active" && requested) {
+      // goal.wait: no continuation and no stall; the next settled run or the
+      // fallback timer wakes the goal.
+      const now = yield* Clock.currentTimeMillis;
+      const until = now + waiting.fallbackMs;
+      yield* commitGoal(ctx, {
+        ...tracked,
+        waiting: { ...waiting, until },
+      });
+      yield* ctx.attention.set(run.sessionId, {
+        id: "waiting-goal",
+        kind: "goal-waiting",
+        inbox: false,
+        summary: `${ctx.config.waitingOnSummary}: ${waiting.reason}`.slice(
+          0,
+          200,
+        ),
+        since: now,
+      });
+      yield* ctx.timers.set(waitTimerKey(run.sessionId), until);
+    } else if (goal.state === "active" && woken) {
+      yield* ctx.timers.cancel(waitTimerKey(run.sessionId));
+      yield* commitGoal(
+        ctx,
+        yield* continueIfIdle(
+          ctx,
+          { ...tracked, waiting: null },
+          `goal-continue:${run.workId}`,
+        ),
+      );
+    } else if (
       goal.state === "active" &&
       !waitingForChild &&
       tracked.stalledTurns >= ctx.config.stallTurns
@@ -416,7 +505,23 @@ function recheckWaiting(
     const sessionId = timer.key.slice(waitTimerPrefix.length);
     const found = yield* ctx.state.goals.get(sessionId);
     if (Option.isNone(found) || found.value.state !== "active") return;
-    if (subagents?.hasLiveChildCommand(sessionId) === true)
+    const armed = found.value.waiting ?? null;
+    if (armed !== null) {
+      // goal.wait's fallback: a re-armed wait ignores a stale firing.
+      if (armed.until === null || armed.until > timer.firedAt) return;
+      return yield* commitGoal(
+        ctx,
+        yield* continueIfIdle(
+          ctx,
+          { ...found.value, waiting: null, stalledTurns: 0 },
+          `goal-wait:${found.value.trackedWorkId}`,
+        ),
+      ).pipe(Effect.andThen(ctx.observe(sessionId)));
+    }
+    if (
+      subagents?.hasLiveChildCommand(sessionId) === true ||
+      (yield* ctx.attention.awaitsPerson(sessionId))
+    )
       return yield* ctx.timers.set(
         timer.key,
         timer.firedAt + ctx.config.waitCheckMs,
@@ -515,12 +620,26 @@ function goalModule(
               ).pipe(
                 Effect.mapError(() => conflict("Goal objective is invalid")),
               );
-              if (Option.isSome(yield* ctx.state.goals.get(sessionId)))
-                return yield* Effect.fail(
-                  conflict(
-                    "A Session goal is already active or paused; only a person replaces it",
-                  ),
-                );
+              const existing = yield* ctx.state.goals.get(sessionId);
+              if (Option.isSome(existing)) {
+                // A goal this run already finished (complete, or clear of a
+                // paused one) hands over to the replacement at settlement.
+                const retiring =
+                  existing.value.trackedWorkId === workId &&
+                  (existing.value.pending?.state === "complete" ||
+                    existing.value.pending?.state === "cleared");
+                if (!retiring)
+                  return yield* Effect.fail(
+                    conflict(
+                      "A Session goal is already active or paused; complete it first, or only a person replaces it",
+                    ),
+                  );
+                yield* ctx.state.goals.put({
+                  ...existing.value,
+                  successor: decoded,
+                });
+                return { objective: decoded, state: "active" as const };
+              }
               yield* commitGoal(ctx, {
                 sessionId,
                 objective: decoded,
@@ -532,6 +651,8 @@ function goalModule(
                 revisionRequestId: `run:${workId}`,
                 trackedWorkId: workId,
                 pauseCause: null,
+                waiting: null,
+                successor: null,
               });
               yield* ctx.observe(sessionId);
               return { objective: decoded, state: "active" as const };
@@ -568,6 +689,61 @@ function goalModule(
                     },
               ),
             ),
+          ),
+      }),
+      wait: Mycelium.operation({
+        replay: "unsafe",
+        description: ctx.config.waitDescription,
+        input: z.strictObject({
+          reason: z.string().min(1).max(1_000),
+          fallbackMinutes: z
+            .number()
+            .int()
+            .min(1)
+            .max(ctx.config.waitMaxMinutes)
+            .optional(),
+        }),
+        output: z.strictObject({
+          objective: toolObjective,
+          state: z.literal("active"),
+          reason: z.string(),
+          fallbackMinutes: z.number().int(),
+        }),
+        execute: ({ reason, fallbackMinutes }) =>
+          toolCall(
+            ctx,
+            "wait",
+            Effect.gen(function* () {
+              const decoded = yield* Schema.decodeUnknownEffect(GoalReason)(
+                reason,
+              ).pipe(Effect.mapError(() => conflict("Wait reason is invalid")));
+              const goal = yield* currentGoal;
+              if (goal.state !== "active")
+                return yield* Effect.fail(
+                  conflict("Only an active Session goal can wait"),
+                );
+              if (goal.pending != null)
+                return yield* Effect.fail(
+                  conflict("This run already requested a goal terminal"),
+                );
+              const minutes = fallbackMinutes ?? ctx.config.waitDefaultMinutes;
+              yield* ctx.state.goals.put({
+                ...goal,
+                // This run's settlement starts the wait.
+                trackedWorkId: workId,
+                waiting: {
+                  reason: decoded,
+                  fallbackMs: minutes * 60_000,
+                  until: null,
+                },
+              });
+              return {
+                objective: goal.objective,
+                state: "active" as const,
+                reason: decoded,
+                fallbackMinutes: minutes,
+              };
+            }),
           ),
       }),
       update_goal: Mycelium.operation({
@@ -686,6 +862,7 @@ function setGoal(
     objective: string;
     requestId: string;
     expectedRevision: string | null;
+    adoptCommandId?: string;
   }>,
 ) {
   return Effect.gen(function* () {
@@ -697,15 +874,23 @@ function setGoal(
       return yield* Effect.fail(
         conflict("Session goal changed; read it before replacing it"),
       );
-    const admitted = yield* ctx.send({
-      sessionId,
-      when: "now",
-      prompt: {
-        text: input.objective,
-        requestId: input.requestId,
-        delivery: "followUp",
-      },
-    });
+    // Adopted work already carries the objective; anything else admits it.
+    const admitted =
+      input.adoptCommandId === undefined
+        ? yield* ctx.send({
+            sessionId,
+            when: "now",
+            prompt: {
+              text: input.objective,
+              requestId: input.requestId,
+              delivery: "followUp",
+            },
+          })
+        : ({
+            _tag: "Accepted",
+            commandId: input.adoptCommandId,
+            delivery: retried ? "replay" : "new",
+          } as const);
     if (admitted._tag !== "Accepted")
       return yield* Effect.fail(conflict("Session goal was not admitted"));
     const accepted = {
@@ -738,10 +923,18 @@ function setGoal(
       revisionRequestId: input.requestId,
       trackedWorkId: admitted.commandId,
       pauseCause: null,
+      waiting: null,
+      successor: null,
     };
-    yield* commitGoal(ctx, row);
+    // Adopted work that already settled left the Session idle: start the
+    // first goal turn now. Otherwise its settlement does.
+    const started =
+      input.adoptCommandId === undefined
+        ? row
+        : yield* continueIfIdle(ctx, row, `goal-adopt:${input.requestId}`);
+    yield* commitGoal(ctx, started);
     yield* ctx.observe(sessionId);
-    return { goal: committed(row), accepted };
+    return { goal: committed(started), accepted };
   });
 }
 

@@ -13,10 +13,13 @@ import type {
 } from "@fungi.computer/shiitake";
 import {
   make,
+  openHost,
   type ShiitakeEffectAgent,
+  type ShiitakeEffectHost,
   type ShiitakeEffectOptions,
 } from "@fungi.computer/shiitake/effect";
 import type {
+  ExtensionCommandCallerV0,
   ExtensionRosterV0,
   Json,
 } from "@fungi.computer/shiitake/extensions";
@@ -112,6 +115,8 @@ export async function openAgent(
   extensions: ExtensionRosterV0,
   overrides: Partial<Pick<ShiitakeEffectOptions, "model" | "tools">> = {},
   logger?: Logger.Logger<unknown, unknown>,
+  /** Join a mail room, so the Agent can accept mail like a Local child. */
+  mailRoom?: Parameters<typeof openHost>[1],
 ) {
   const execute = <A, E>(effect: Effect.Effect<A, E>): Promise<A> =>
     Effect.runPromise(
@@ -136,30 +141,34 @@ export async function openAgent(
         };
       }),
   };
-  const agent: ShiitakeEffectAgent = await execute(
-    make({
-      store: owner,
-      runtime,
-      extensions,
-      instructions: {
-        load: () => Effect.succeed({ revision: "test-v1", text: "Reply." }),
-      },
-      model: {
-        acquire: () =>
-          Effect.sync(() => {
-            const faux = fauxModel([]);
-            faux.setResponses([fauxAssistantMessage("done")]);
-            return {
-              retryable: () => false,
-              model: faux.model,
-              stream: faux.stream,
-              release: Effect.void,
-            };
-          }),
-      },
-      ...overrides,
-    }),
-  );
+  const options: ShiitakeEffectOptions = {
+    store: owner,
+    runtime,
+    extensions,
+    instructions: {
+      load: () => Effect.succeed({ revision: "test-v1", text: "Reply." }),
+    },
+    model: {
+      acquire: () =>
+        Effect.sync(() => {
+          const faux = fauxModel([]);
+          faux.setResponses([fauxAssistantMessage("done")]);
+          return {
+            retryable: () => false,
+            model: faux.model,
+            stream: faux.stream,
+            release: Effect.void,
+          };
+        }),
+    },
+    ...overrides,
+  };
+  const mailHost: ShiitakeEffectHost | undefined =
+    mailRoom === undefined
+      ? undefined
+      : await execute(openHost(options, mailRoom));
+  const agent: ShiitakeEffectAgent =
+    mailHost?.agent ?? (await execute(make(options)));
   const host = () => {
     if (bound === undefined) throw new Error("Runtime is not bound");
     return bound;
@@ -168,6 +177,8 @@ export async function openAgent(
   const reconcile = () => execute(host().reconcile);
   return {
     agent,
+    /** Present only when the Agent joined a mail room. */
+    mail: mailHost,
     pendingWork,
     reconcile,
     /** Reconcile until nothing is pending, bounded. */
@@ -188,8 +199,14 @@ export async function openAgent(
     /** A Promise-shaped Session address for client bindings. */
     session: (sessionId: string) => ({
       extension: (id: string) => ({
-        call: (command: string, input: Json) =>
-          run(agent.session(sessionId).extension(id).call(command, input)),
+        call: (
+          command: string,
+          input: Json,
+          caller?: ExtensionCommandCallerV0,
+        ) =>
+          run(
+            agent.session(sessionId).extension(id).call(command, input, caller),
+          ),
       }),
       read: () => run(agent.session(sessionId).read()),
     }),

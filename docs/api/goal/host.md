@@ -26,4 +26,25 @@ The commands this extension advertises to every client.
 const goalExtension: RosteredExtensionV0;
 ```
 
-Botanical's Session goal, driven only by settled runs.
+Ordinary roster when no created-Agent directory is available.
+
+## Functions
+
+### goalExtensionFor()
+
+```ts
+function goalExtensionFor(subagents?): RosteredExtensionV0;
+```
+
+Botanical's Session goal; hosts with created-Agent facts include them in
+progress.
+
+#### Parameters
+
+| Parameter    | Type                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `subagents?` | `Readonly`\<\{ `hasLiveChildCommand`: (`sessionId`) => `boolean`; `read`: (`sessionId`, `limit`) => `Promise`\<`Readonly`\<\{ `agents`: readonly `Readonly`\<\{ `agentId`: `string`; `name`: `string`; `sessionId`: ... \| ...; \}\>[]; `more`: `number`; \}\>\>; `open`: (`agentId`, `signal`) => `Promise`\<`Readonly`\<\{ `agent`: [`SubagentAgent`](../subagents/host.md#subagentagent); `release`: () => `Promise`\<`void`\>; \}\>\>; \}\> |
+
+#### Returns
+
+`RosteredExtensionV0`

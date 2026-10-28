@@ -182,6 +182,12 @@ export const goalContract = {
         expectedRevision: Schema.NullOr(Schema.String),
         /** Idempotency key for this setting command. */
         requestId: RequestId,
+        /**
+         * Work already admitted in this Session that carries the objective,
+         * such as a delegated send. The goal adopts it instead of admitting
+         * the objective again; its settlement starts the goal turns.
+         */
+        adoptCommandId: Schema.optionalKey(RequestId),
       }),
       /** Return the goal and its admission receipt. */
       output: Schema.Struct({

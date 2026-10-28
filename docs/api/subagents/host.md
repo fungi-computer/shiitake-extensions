@@ -29,11 +29,13 @@ A footer row for an ordinary Agent created by the current Agent.
 ```ts
 type SubagentAgent = Readonly<{
   listSessions: ShiitakeAgent["listSessions"];
-  session: (sessionId) => Pick<ShiitakeSession, "read">;
+  session: (
+    sessionId,
+  ) => Pick<ShiitakeSession, "read" | "readSettlement" | "extension">;
 }>;
 ```
 
-The two owner reads a status needs from one child Agent.
+Owner reads used for status and exact delegated command settlement.
 
 ---
 
@@ -41,6 +43,7 @@ The two owner reads a status needs from one child Agent.
 
 ```ts
 type SubagentSource = Readonly<{
+  hasLiveChildCommand: (sessionId) => boolean;
   read: (
     sessionId,
     limit,

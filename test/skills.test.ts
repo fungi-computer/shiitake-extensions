@@ -504,10 +504,13 @@ describe("skills extension", () => {
         },
       };
       await expect(
-        runtime.execute("botanical-skills:skills", {
-          origin: "slash",
-          interaction,
-        }),
+        runtime.execute(
+          { namespace: "botanical-skills", id: "skills" },
+          {
+            origin: "slash",
+            interaction,
+          },
+        ),
       ).resolves.toMatchObject({ status: "handled" });
       expect(asked).toEqual([
         {

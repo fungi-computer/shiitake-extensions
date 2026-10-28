@@ -1,6 +1,6 @@
 {
   "name": "@fungi.computer/shiitake-extensions",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "author": "Levi <levi@technomancy.dev>",
   "private": false,
   "description": "Botanical's product Shiitake extensions: goal, loop and Almanac on the generic extension surface",
@@ -129,14 +129,12 @@
     "@fungi.computer/watchdog": "workspace:*",
     "@fungi.computer/whistle": "workspace:*",
     "effect": "4.0.2",
-    "papaparse": "5.7.0",
     "zod": "4.4.3",
     "@fungi.computer/gills": "workspace:*"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "1.3.0",
     "@types/node": "24.13.3",
-    "@types/papaparse": "5.5.2",
     "typescript": "5.9.3",
     "vitest": "4.1.11",
     "@fungi.computer/mule": "workspace:*"

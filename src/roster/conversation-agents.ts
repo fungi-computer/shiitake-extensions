@@ -5,6 +5,10 @@ import {
 } from "@fungi.computer/shiitake/agent-control";
 import type { CapabilitySource } from "@fungi.computer/mycelium";
 import type { SqliteRow } from "@fungi.computer/shiitake";
+import {
+  bindSessionExtension,
+  type ShiitakeSession,
+} from "@fungi.computer/shiitake/client";
 import type { WatchdogSqliteOwner } from "@fungi.computer/watchdog";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -12,6 +16,7 @@ import {
   botanicalAgentExtensions,
   botanicalExtensionsWithSubagents,
 } from "../roster.js";
+import { goalContract } from "../goal/contract.js";
 import type { SubagentSource } from "../subagents/host.js";
 
 /** Host-pack creation admission; attachments/model selection retain their own owners. */
@@ -47,6 +52,34 @@ const delegatedCommandRow = Schema.Struct({
 const maxWatchedCommands = 64;
 const pollMs = 2_000;
 const maxWatchMs = 30 * 60_000;
+
+/** The directory a conversation sends through; opening a recipient only needs its Sessions' extension doors. */
+type SendingDirectory = Omit<AgentControlDirectory, "open"> &
+  Readonly<{
+    open: (
+      agentId: string,
+      signal: AbortSignal,
+    ) => Promise<
+      Readonly<{
+        agent: Readonly<{
+          session: (sessionId: string) => Pick<ShiitakeSession, "extension">;
+        }>;
+        release: () => Promise<void>;
+      }>
+    >;
+  }>;
+
+/** The objective of a delegated lane: the named goal, else the send's first line. */
+function laneObjective(text: string, goal: string | undefined): string {
+  const named = goal?.trim();
+  if (named !== undefined && named !== "") return named;
+  return (
+    text
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) => line !== "") ?? text.trim()
+  ).slice(0, 4_000);
+}
 
 /**
  * This host's own record of the Agents each conversation created or sent
@@ -113,10 +146,10 @@ export function createConversationAgents(storage: WatchdogSqliteOwner) {
     }
   }
   /** One conversation's directory: its accepted creates and sends are recorded. */
-  function recording(
+  function recording<Directory extends SendingDirectory>(
     parentSessionId: string | undefined,
-    directory: AgentControlDirectory,
-  ): AgentControlDirectory {
+    directory: Directory,
+  ): Directory {
     const { create, send } = directory;
     let recorded = directory;
     if (create !== undefined && parentSessionId !== undefined)
@@ -138,13 +171,35 @@ export function createConversationAgents(storage: WatchdogSqliteOwner) {
             signal,
             invocation,
           );
-          if (accepted.status === "accepted")
-            sent(
-              sourceSessionId,
-              task.agentId,
-              accepted.sessionId ?? task.sessionId,
-              accepted.commandId,
-            );
+          if (accepted.status === "accepted") {
+            const sessionId = accepted.sessionId ?? task.sessionId;
+            sent(sourceSessionId, task.agentId, sessionId, accepted.commandId);
+            // A send that opens a new Session puts it under a goal, so the
+            // lane keeps working until it reports complete or blocked. A
+            // retry replays the same request id, so the goal is set once.
+            if (
+              task.delivery === "followUp" &&
+              task.sessionId === undefined &&
+              task.goal !== false &&
+              sessionId !== undefined
+            ) {
+              const opened = await directory.open(task.agentId, signal);
+              try {
+                await bindSessionExtension(
+                  opened.agent.session(sessionId),
+                  goalContract,
+                ).call("set", {
+                  objective: laneObjective(task.text, task.goal),
+                  expectedRevision: null,
+                  requestId: `lane-goal:${accepted.commandId}`,
+                  // The send is the lane's first turn; never repeat it.
+                  adoptCommandId: accepted.commandId,
+                });
+              } finally {
+                await opened.release();
+              }
+            }
+          }
           return accepted;
         },
       };

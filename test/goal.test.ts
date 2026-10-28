@@ -8,7 +8,12 @@ import type { SandboxRequest } from "@fungi.computer/mycelium";
 import { fromTypedSandbox } from "@fungi.computer/mycelium/effect";
 import { bindSessionExtension } from "@fungi.computer/shiitake/client";
 import type { ShiitakeEffectOptions } from "@fungi.computer/shiitake/effect";
+import {
+  defineExtension,
+  ExtensionId,
+} from "@fungi.computer/shiitake/extensions";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -575,7 +580,7 @@ it("R3 an achieved goal commits only on successful settlement, then leaves the c
     expect(results[0]).toMatchObject({
       created: { objective: "Finish the fern", state: "active" },
       rejected: [
-        "A Session goal is already active or paused; only a person replaces it",
+        "A Session goal is already active or paused; complete it first, or only a person replaces it",
         expect.any(String),
       ],
     });
@@ -1122,7 +1127,7 @@ it("waits visibly only for live child commands and resumes the ordinary stall gu
   }
 });
 
-it("continues parent goal work after a tool-using turn even while child work is live", async () => {
+it("a polling goal turn with a live child waits and admits no continuation", async () => {
   const subagents: SubagentSource = {
     hasLiveChildCommand: () => true,
     read: () => Promise.resolve({ agents: [], more: 0 }),
@@ -1139,10 +1144,10 @@ it("continues parent goal work after a tool-using turn even while child work is 
         }),
       },
       model: scriptedModel([
-        fauxAssistantMessage(fauxToolCall("execute", { code: "progress" }), {
+        fauxAssistantMessage(fauxToolCall("execute", { code: "poll" }), {
           stopReason: "toolUse",
         }),
-        fauxAssistantMessage("Parent made progress"),
+        fauxAssistantMessage("Child still working"),
       ]),
     },
     sqliteOwner(),
@@ -1152,11 +1157,16 @@ it("continues parent goal work after a tool-using turn even while child work is 
     await host.goal.call("set", {
       objective: "Land parent work",
       expectedRevision: null,
-      requestId: "parent-progress",
+      requestId: "parent-polling",
     });
     await host.reconcile();
-    expect(await host.commands()).toBe(2);
-    expect((await host.session("garden").read()).attention).toEqual([]);
+    expect(await host.commands()).toBe(1);
+    expect((await host.session("garden").read()).attention).toEqual([
+      expect.objectContaining({ kind: "goal-waiting" }),
+    ]);
+    expect(await host.view()).toMatchObject({
+      value: { goal: { state: "active" } },
+    });
   } finally {
     await host.dispose();
   }
@@ -1995,6 +2005,313 @@ it("the menu's Replace asks for the new goal and then asks a destructive confirm
     expect(await host.view()).toMatchObject({
       value: { goal: { objective: "Tidy the menus", state: "paused" } },
     });
+  } finally {
+    await host.dispose();
+  }
+});
+
+/** A sandbox that runs each `execute` code as one goal tool call. */
+function goalCaller(
+  script: Readonly<Record<string, readonly [string, GoalToolInput]>>,
+  results: unknown[] = [],
+) {
+  return {
+    modules: [],
+    sources: [],
+    sandbox: fromTypedSandbox({
+      execute: async (request: SandboxRequest) => {
+        const step = script[request.code];
+        const goal = request.bindings.goal;
+        if (step === undefined || goal === undefined)
+          throw new Error("goal tools are missing");
+        const operation = goal[step[0]];
+        if (operation === undefined) throw new Error(`missing ${step[0]}`);
+        const result = await operation(step[1]);
+        results.push(result);
+        return result;
+      },
+    }),
+  };
+}
+
+const callExecute = (code: string) =>
+  fauxAssistantMessage(fauxToolCall("execute", { code }), {
+    stopReason: "toolUse",
+  });
+
+const idleChild = (live: () => boolean): SubagentSource => ({
+  hasLiveChildCommand: live,
+  read: () => Promise.resolve({ agents: [], more: 0 }),
+  open: () => Promise.reject(new Error("No child read belongs in settlement")),
+});
+
+it("goal.wait suppresses continuation and stall until another run settles", async () => {
+  const results: unknown[] = [];
+  const host = await openGoal({
+    tools: goalCaller(
+      {
+        wait: ["wait", { reason: "train 682", fallbackMinutes: 20 }],
+      },
+      results,
+    ),
+    model: scriptedModel([
+      callExecute("wait"),
+      fauxAssistantMessage("Waiting on the train"),
+      fauxAssistantMessage("A reply arrived"),
+      callExecute("wait"),
+      fauxAssistantMessage("Still waiting"),
+    ]),
+  });
+  try {
+    await host.goal.call("set", {
+      objective: "Land the train",
+      expectedRevision: null,
+      requestId: "wait-goal",
+    });
+    await host.drain();
+    expect(results).toEqual([
+      {
+        objective: "Land the train",
+        state: "active",
+        reason: "train 682",
+        fallbackMinutes: 20,
+      },
+    ]);
+    // One turn, no goal continuation, no stall, and the reason is shown.
+    expect(await host.commands()).toBe(1);
+    expect((await host.session("garden").read()).attention).toEqual([
+      expect.objectContaining({
+        kind: "goal-waiting",
+        summary: "Waiting: train 682",
+      }),
+    ]);
+    expect(await host.view()).toMatchObject({
+      value: { goal: { state: "active", pauseCause: null } },
+    });
+    // The next settled run (a reply, a person) wakes it: exactly one goal turn.
+    await Effect.runPromise(
+      host.agent.session("garden").send("The train landed", {
+        requestId: "reply-1",
+        delivery: "followUp",
+      }),
+    );
+    await host.drain();
+    expect(await host.commands()).toBe(3);
+    expect((await host.session("garden").read()).attention).toEqual([
+      expect.objectContaining({ kind: "goal-waiting" }),
+    ]);
+  } finally {
+    await host.dispose();
+  }
+});
+
+it("the fallback timer admits one goal turn", async () => {
+  const startAt = Date.parse("2026-10-27T12:00:00.000Z");
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(startAt);
+  const host = await openGoal({
+    tools: goalCaller({
+      wait: ["wait", { reason: "main", fallbackMinutes: 5 }],
+    }),
+    model: scriptedModel([
+      callExecute("wait"),
+      fauxAssistantMessage("Waiting on main"),
+      callExecute("wait"),
+      fauxAssistantMessage("Checked main, waiting again"),
+    ]),
+  });
+  try {
+    await host.goal.call("set", {
+      objective: "Land main",
+      expectedRevision: null,
+      requestId: "fallback-goal",
+    });
+    await host.drain();
+    expect(await host.commands()).toBe(1);
+    expect(await host.pendingWork()).toEqual({
+      pending: false,
+      nextWakeAt: startAt + 5 * 60_000,
+    });
+    vi.setSystemTime(startAt + 4 * 60_000);
+    await host.drain();
+    expect(await host.commands()).toBe(1);
+    vi.setSystemTime(startAt + 5 * 60_000);
+    await host.drain();
+    expect(await host.commands()).toBe(2);
+    expect(await host.view()).toMatchObject({
+      value: { goal: { state: "active" } },
+    });
+  } finally {
+    await host.dispose();
+    vi.useRealTimers();
+  }
+});
+
+it("an open question keeps the goal waiting, not stalled", async () => {
+  const asker = defineExtension({
+    id: ExtensionId.make("test-asker"),
+    version: "1.0.0",
+  })
+    .state({ version: 1, migrations: {}, collections: {} })
+    .define({
+      attention: true,
+      commands: {
+        specs: {
+          ask: {
+            scope: "session",
+            input: Schema.Struct({}),
+            output: Schema.Struct({}),
+          },
+        },
+        handlers: (ctx) => ({
+          ask: ({ sessionId }: { sessionId: string }) =>
+            ctx.attention
+              .set(sessionId, {
+                id: "q",
+                kind: "question",
+                summary: "Which branch?",
+                since: 1,
+              })
+              .pipe(Effect.as({})),
+        }),
+      },
+    });
+  const host = await openAgent(
+    sqliteOwner().owner,
+    grantAll([goalExtension, asker]),
+  );
+  try {
+    const session = host.session("garden");
+    await bindSessionExtension(session, goalContract).call("set", {
+      objective: "Needs an answer",
+      expectedRevision: null,
+      requestId: "ask-goal",
+    });
+    await session.extension(asker.manifest.id).call("ask", {});
+    await host.drain();
+    // Three tool-free goal turns would have stalled it; one waiting turn runs.
+    const read = await session.read();
+    expect(
+      read.messages.filter(({ value }) => value.role === "user"),
+    ).toHaveLength(1);
+    expect(read.attention.map(({ kind }) => kind).sort()).toEqual([
+      "goal-waiting",
+      "question",
+    ]);
+  } finally {
+    await host.close();
+  }
+});
+
+it("twenty settled replies admit at most one goal turn each", async () => {
+  const subagents = idleChild(() => true);
+  const host = await openGoal({}, sqliteOwner(), subagents);
+  try {
+    await host.goal.call("set", {
+      objective: "Review eight children",
+      expectedRevision: null,
+      requestId: "spam-goal",
+    });
+    await host.drain();
+    let before = await host.commands();
+    for (let reply = 0; reply < 20; reply += 1) {
+      await Effect.runPromise(
+        host.agent.session("garden").send(`Reply ${String(reply)}`, {
+          requestId: `reply-${String(reply)}`,
+          delivery: "followUp",
+        }),
+      );
+      await host.drain();
+      const after = await host.commands();
+      // Session reads keep a bounded window; count while it still grows.
+      if (after < 33) expect(after - before).toBe(2);
+      before = after;
+    }
+    // Twenty replies never stalled or paused the goal.
+    expect(await host.view()).toMatchObject({
+      value: { goal: { state: "active" } },
+    });
+  } finally {
+    await host.dispose();
+  }
+});
+
+it("create after complete in one run replaces the goal at settlement", async () => {
+  const results: unknown[] = [];
+  const host = await openGoal({
+    tools: goalCaller(
+      {
+        done: ["update_goal", { status: "complete", reason: "Lane landed" }],
+        next: ["create_goal", { objective: "Second lane" }],
+        wait: ["wait", { reason: "second lane builds" }],
+      },
+      results,
+    ),
+    model: scriptedModel([
+      callExecute("done"),
+      callExecute("next"),
+      fauxAssistantMessage("Retired and replaced"),
+      callExecute("wait"),
+      fauxAssistantMessage("Second lane under way"),
+    ]),
+  });
+  try {
+    await host.goal.call("set", {
+      objective: "First lane",
+      expectedRevision: null,
+      requestId: "retire-goal",
+    });
+    await host.drain();
+    expect(results.slice(0, 2)).toEqual([
+      { objective: "First lane", state: "complete", reason: "Lane landed" },
+      { objective: "Second lane", state: "active" },
+    ]);
+    expect(await host.view()).toMatchObject({
+      value: {
+        goal: { objective: "Second lane", state: "active" },
+        ended: [
+          {
+            objective: "First lane",
+            outcome: "achieved",
+            reason: "Lane landed",
+          },
+        ],
+      },
+    });
+    // The replacement takes over: its first goal turn was admitted.
+    expect(await host.commands()).toBeGreaterThanOrEqual(2);
+  } finally {
+    await host.dispose();
+  }
+});
+
+it("a goal that adopts already-settled work starts its first goal turn, once", async () => {
+  const host = await openGoal();
+  try {
+    const sent = await Effect.runPromise(
+      host.agent.session("garden").send("Build the fern lane", {
+        requestId: "lane",
+        delivery: "followUp",
+      }),
+    );
+    await host.drain();
+    expect(await host.commands()).toBe(1);
+    const adopt = {
+      objective: "Build the fern lane",
+      expectedRevision: null,
+      requestId: "lane-goal",
+      adoptCommandId: sent.commandId,
+    };
+    const first = await host.goal.call("set", adopt);
+    expect(first.accepted.commandId).toBe(sent.commandId);
+    // The objective is not admitted again; one goal turn starts instead.
+    const read = await host.session("garden").read();
+    expect(read.pending.prompts.map(({ text }) => text)).toEqual([
+      "Goal turn · Build the fern lane",
+    ]);
+    // A retry replays: no second goal turn.
+    expect(await host.goal.call("set", adopt)).toEqual(first);
+    expect(await host.commands()).toBe(2);
   } finally {
     await host.dispose();
   }

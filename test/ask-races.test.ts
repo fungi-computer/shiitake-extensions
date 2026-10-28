@@ -1,6 +1,6 @@
 import * as Effect from "effect/Effect";
 import { afterEach, expect, it, vi } from "vitest";
-import { questionHost, questions } from "./fixtures/ask.js";
+import { questionHost, questions, mintedId } from "./fixtures/ask.js";
 
 afterEach(() => vi.useRealTimers());
 
@@ -59,7 +59,13 @@ it.each([
       expect(result).toEqual(
         edge === "expiry" && winner === "clock"
           ? { result: "closed", status: "expired" }
-          : { result: "accepted", via: followsUp ? "follow_up" : "in_turn" },
+          : followsUp
+            ? {
+                result: "accepted",
+                via: "follow_up",
+                commandId: mintedId,
+              }
+            : { result: "accepted", via: "in_turn" },
       );
       await running;
       await host.drain();

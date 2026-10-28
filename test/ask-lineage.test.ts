@@ -1,6 +1,6 @@
 import * as Effect from "effect/Effect";
 import { expect, it } from "vitest";
-import { questionHost } from "./fixtures/ask.js";
+import { questionHost, mintedId } from "./fixtures/ask.js";
 
 it("keeps questions across a same-Session branch and copies none to a fork", async () => {
   const fixture = await questionHost();
@@ -43,7 +43,11 @@ it("keeps questions across a same-Session branch and copies none to a fork", asy
           requestId: "after-branch",
           answers: { storage: { selected: ["SQLite"] } },
         }),
-    ).toEqual({ result: "accepted", via: "follow_up" });
+    ).toEqual({
+      result: "accepted",
+      via: "follow_up",
+      commandId: mintedId,
+    });
     expect(
       (await host.session("questions").read()).pending.prompts,
     ).toHaveLength(1);

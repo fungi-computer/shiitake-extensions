@@ -3,7 +3,7 @@ import type { ExtensionRosterV0 } from "@fungi.computer/shiitake/extensions";
 import { almanacContract } from "./almanac/contract.js";
 import { almanacExtension } from "./almanac/host.js";
 import { questionContract } from "./question/contract.js";
-import { questionExtension } from "./question/host.js";
+import { localQuestionExtension, questionExtension } from "./question/host.js";
 import { goalContract } from "./goal/contract.js";
 import { goalExtension, goalExtensionFor } from "./goal/host.js";
 import { loopContract } from "./loop/contract.js";
@@ -19,8 +19,9 @@ import {
 } from "./subagents/host.js";
 
 /**
- * Botanical's product roster with explicit grants. Hub and Local pass this
- * same value; a stranger host passes its own (or an empty) roster.
+ * Botanical's shared roster with explicit grants. Local composes its
+ * sender-routing question extension through `botanicalExtensionsWithSkills`;
+ * hosts without that Local capability send every Ask to a person.
  */
 export const botanicalAgentExtensions: ExtensionRosterV0 = Object.freeze({
   roster: Object.freeze([
@@ -109,8 +110,21 @@ export function botanicalExtensionsWithSubagents(
 export function botanicalExtensionsWithSkills(
   source: SkillSource,
 ): ExtensionRosterV0 {
+  const local = botanicalExtensionsWithSenderRouting();
   return {
-    roster: [...botanicalAgentExtensions.roster, skillsExtension({ source })],
-    grants: [...botanicalAgentExtensions.grants, skillsGrant],
+    roster: [...local.roster, skillsExtension({ source })],
+    grants: [...local.grants, skillsGrant],
+  };
+}
+
+/** Route Asks to the Agent that sent the work, only in a host that owns the Local answer door. */
+export function botanicalExtensionsWithSenderRouting(): ExtensionRosterV0 {
+  return {
+    ...botanicalAgentExtensions,
+    roster: botanicalAgentExtensions.roster.map((extension) =>
+      extension.manifest.id === questionContract.id
+        ? localQuestionExtension
+        : extension,
+    ),
   };
 }

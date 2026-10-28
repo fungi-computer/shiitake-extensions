@@ -4,6 +4,7 @@ import {
 } from "@fungi.computer/shiitake/extensions";
 import * as Schema from "effect/Schema";
 import { CatalogStep } from "../internal/catalog.js";
+import { AnswerFlowInput, Questions } from "../question/contract.js";
 
 const identity = Schema.String.check(
   Schema.isMinLength(1),
@@ -14,13 +15,15 @@ const identity = Schema.String.check(
 export const maximumSubagents = 16;
 
 /**
- * What the human sees for one ordinary created Agent. `waiting` is any open attention on
- * its conversation (a question or a tool approval); `unavailable` means its
- * status could not be read, and is never shown as idle.
+ * What the human sees for one ordinary created Agent. `waiting_on_agent` is an
+ * open question that waits on the Agent that sent the work, calm until it is
+ * escalated; `needs_you` is attention that waits on a person; `unavailable`
+ * means its status could not be read, and is never shown as idle.
  */
 export const SubagentState = Schema.Literals([
   "working",
-  "waiting",
+  "waiting_on_agent",
+  "needs_you",
   "idle",
   "failed",
   "unavailable",
@@ -38,8 +41,19 @@ export const Subagent = Schema.Struct({
   sessionId: Schema.NullOr(identity),
   /** Observed conversation state, including unreadable status. */
   state: SubagentState,
-  /** The child's own summary of what waits on the human, when waiting. */
+  /** The child's own summary of what it waits on, when waiting. */
   attention: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(200))),
+  /** Display name of the Agent a `waiting_on_agent` child waits on. */
+  waitingOn: Schema.optionalKey(identity),
+  /** The question a waiting child asks, so a person can answer from here. */
+  ask: Schema.optionalKey(
+    Schema.Struct({
+      /** Durable identity of the child's open Ask. */
+      askId: identity,
+      /** The decisions the child asks, so they can be answered from here. */
+      questions: Questions,
+    }),
+  ),
 });
 /** Decoded footer row for a created Agent. */
 export type Subagent = typeof Subagent.Type;
@@ -60,6 +74,23 @@ export const SubagentsProjection = Schema.Struct({
 /** Decoded list and expansion state projected into the footer. */
 export type SubagentsProjection = typeof SubagentsProjection.Type;
 
+/** One child, as an answer step names it beside the draft it advances. */
+const child = {
+  /** Identity of the child Agent whose Ask is being answered. */
+  agentId: identity,
+  /** The child's conversation that holds the Ask. */
+  sessionId: identity,
+};
+/**
+ * The question flow's own steps, each naming the child whose Ask they answer.
+ * The footer owns the conversation; the child's question owner commits it.
+ */
+export const AnswerChildInput = Schema.Union(
+  AnswerFlowInput.members.map((member) =>
+    Schema.Struct({ ...member.fields, ...child }),
+  ),
+);
+
 /** The human `/agents` command: a bare call expands or collapses the footer rows. */
 const commands = {
   /** Toggle the created-Agent footer between expanded and summarized views. */
@@ -69,6 +100,15 @@ const commands = {
     /** No additional arguments are required. */
     input: Schema.Struct({}),
     /** Return the server-owned human control step. */
+    output: CatalogStep,
+  },
+  /** Answer a question an escalated sub-agent asks, from this conversation. */
+  answerChild: {
+    /** The Session owns its footer. */
+    scope: "session",
+    /** The next step of the child's answer conversation. */
+    input: AnswerChildInput,
+    /** Return the next human conversation step. */
     output: CatalogStep,
   },
 } satisfies CommandsV0;

@@ -5,11 +5,15 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import { fromTypedSandbox } from "@fungi.computer/mycelium/effect";
 import type { SandboxRequest, SandboxValue } from "@fungi.computer/mycelium";
+import type { ExtensionRosterV0 } from "@fungi.computer/shiitake/extensions";
 import * as Effect from "effect/Effect";
 import { expect } from "vitest";
 import { z } from "zod";
 import { botanicalAgentExtensions } from "../../src/roster.js";
 import { openAgent, sqliteOwner } from "./host.js";
+
+/** Any string: an id the host mints, such as the follow-up command of an answer. */
+export const mintedId: unknown = expect.any(String);
 
 export const questions = [
   {
@@ -24,13 +28,19 @@ export const questions = [
 ];
 
 export async function questionHost(
-  input: SandboxValue = { questions, mode: "continue" },
+  input: SandboxValue = {
+    questions,
+    mode: "continue",
+  },
   options: Readonly<{
+    extensions?: ExtensionRosterV0;
     priorInput?: SandboxValue;
     store?: ReturnType<typeof sqliteOwner>;
     afterResult?: () => Promise<void>;
     timeoutMs?: number;
     codes?: readonly string[];
+    /** The Agent Session that sends the asking work as delegated mail. */
+    sender?: Readonly<{ agentId: string; sessionId: string; name: string }>;
     program?: (
       bindings: SandboxRequest["bindings"],
       code: string,
@@ -52,49 +62,87 @@ export async function questionHost(
   ]);
   let result: SandboxValue;
   let offered: string[] = [];
-  const host = await openAgent(store.owner, botanicalAgentExtensions, {
-    model: {
-      acquire: () =>
-        Effect.succeed({
-          retryable: () => false,
-          model: faux.model,
-          stream: faux.stream,
-          release: Effect.void,
+  const settlements: unknown[] = [];
+  const host = await openAgent(
+    store.owner,
+    options.extensions ?? botanicalAgentExtensions,
+    {
+      model: {
+        acquire: () =>
+          Effect.succeed({
+            retryable: () => false,
+            model: faux.model,
+            stream: faux.stream,
+            release: Effect.void,
+          }),
+      },
+      tools: {
+        modules: [],
+        sources: [],
+        execution: { timeoutMs: options.timeoutMs ?? 180_000 },
+        sandbox: fromTypedSandbox({
+          execute: async (request) => {
+            offered = Object.keys(request.bindings);
+            const ask = request.bindings.question?.ask;
+            if (ask === undefined)
+              throw new Error("Ask capability is not offered");
+            if (options.priorInput !== undefined) await ask(options.priorInput);
+            const response =
+              options.program === undefined
+                ? await ask(input)
+                : await options.program(request.bindings, request.code);
+            result = response;
+            await options.afterResult?.();
+            return response;
+          },
         }),
+      },
     },
-    tools: {
-      modules: [],
-      sources: [],
-      execution: { timeoutMs: options.timeoutMs ?? 180_000 },
-      sandbox: fromTypedSandbox({
-        execute: async (request) => {
-          offered = Object.keys(request.bindings);
-          const ask = request.bindings.question?.ask;
-          if (ask === undefined)
-            throw new Error("Ask capability is not offered");
-          if (options.priorInput !== undefined) await ask(options.priorInput);
-          const response =
-            options.program === undefined
-              ? await ask(input)
-              : await options.program(request.bindings, request.code);
-          result = response;
-          await options.afterResult?.();
-          return response;
+    undefined,
+    options.sender === undefined
+      ? undefined
+      : {
+          fanOut: (settlement) =>
+            Effect.sync(() => {
+              settlements.push(settlement);
+            }),
+          postMail: () => Effect.void,
+          drainOutbox: () => Effect.void,
+          nextWakeAt: () => Effect.succeed(undefined),
         },
-      }),
-    },
-  });
+  );
   return {
     store,
     host,
     result: () => result,
+    /** Every settlement the mail room was asked to fan out. */
+    settlements,
     park: async () => {
-      await Effect.runPromise(
-        host.agent.session("questions").send("Choose storage", {
-          requestId: "choose-storage",
-          delivery: "followUp",
-        }),
-      );
+      if (options.sender !== undefined && host.mail !== undefined) {
+        const { agentId, sessionId, name } = options.sender;
+        const from = { kind: "agent" as const, agentId, sessionId };
+        const meta = { author: { id: agentId, name, kind: "agent" as const } };
+        await Effect.runPromise(
+          host.mail.acceptMail(
+            {
+              key: "mail-choose-storage",
+              to: { kind: "agent", agentId: "child", sessionId: "questions" },
+              from,
+              replyTo: [from],
+              content: "Choose storage",
+              createdAt: 1,
+              meta,
+            },
+            meta,
+          ),
+        );
+      } else
+        await Effect.runPromise(
+          host.agent.session("questions").send("Choose storage", {
+            requestId: "choose-storage",
+            delivery: "followUp",
+          }),
+        );
       await host.drain();
       expect(offered).toContain("question");
       return z

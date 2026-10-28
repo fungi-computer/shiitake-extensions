@@ -68,6 +68,26 @@ type HumanResult = Schema.Schema.Type<typeof HumanResult>;
 
 Decoded outcome of a human answer or decline.
 
+---
+
+### AgentAnswerResult
+
+```ts
+type AgentAnswerResult = Schema.Schema.Type<typeof AgentAnswerResult>;
+```
+
+Decoded result of an authenticated Agent answer.
+
+---
+
+### EscalateResult
+
+```ts
+type EscalateResult = Schema.Schema.Type<typeof EscalateResult>;
+```
+
+Decoded result of passing an Ask on.
+
 ## Variables
 
 ### Question
@@ -119,6 +139,13 @@ Bounded question set with distinct question identities.
 ```ts
 const OpenAsk: Struct<{
   askId: String;
+  waitingOn: optionalKey<
+    Struct<{
+      agentId: NonEmptyString;
+      sessionId: NonEmptyString;
+      name: NonEmptyString;
+    }>
+  >;
   questions: $Array<
     Struct<{
       id: String;
@@ -149,6 +176,11 @@ The complete question data shared by ordinary Session clients.
 const AskProjection: Struct<{
   asks: $Array<Struct<{
      askId: String;
+     waitingOn: optionalKey<Struct<{
+        agentId: NonEmptyString;
+        sessionId: NonEmptyString;
+        name: NonEmptyString;
+     }>>;
      questions: $Array<Struct<{
         id: String;
         header: String;
@@ -257,6 +289,7 @@ const HumanResult: Union<
     Struct<{
       result: Literal<"accepted">;
       via: Literals<readonly ["in_turn", "follow_up"]>;
+      commandId: optionalKey<String>;
     }>,
     Struct<{
       result: Literal<"closed">;
@@ -282,6 +315,123 @@ Admission, already-closed state, or absence returned to a human reply.
 
 ---
 
+### SenderRefusal
+
+```ts
+const SenderRefusal: Struct<{
+  result: Literal<"refused">;
+  reason: Literal<"not_sender">;
+}>;
+```
+
+Only the Agent an Ask waits on may answer or escalate it.
+
+---
+
+### AgentAnswerResult
+
+```ts
+const AgentAnswerResult: Union<
+  readonly [
+    Union<
+      readonly [
+        Struct<{
+          result: Literal<"accepted">;
+          via: Literals<readonly ["in_turn", "follow_up"]>;
+          commandId: optionalKey<String>;
+        }>,
+        Struct<{
+          result: Literal<"closed">;
+          status: Literals<
+            readonly [
+              "answered",
+              "declined",
+              "withdrawn",
+              "expired",
+              "cancelled",
+              "undeliverable",
+            ]
+          >;
+        }>,
+        Struct<{
+          result: Literal<"not_found">;
+        }>,
+      ]
+    >,
+    Struct<{
+      result: Literal<"refused">;
+      reason: Literal<"not_sender">;
+    }>,
+  ]
+>;
+```
+
+Outcome of the Agent an Ask waits on answering it.
+
+---
+
+### AnsweredBy
+
+```ts
+const AnsweredBy: Struct<{
+  kind: Literal<"agent">;
+  agentId: String;
+}>;
+```
+
+The Agent that answered, as the host authenticated it.
+
+---
+
+### EscalateResult
+
+```ts
+const EscalateResult: Union<
+  readonly [
+    Struct<{
+      result: Literal<"escalated">;
+      to: Literal<"person">;
+    }>,
+    Struct<{
+      result: Literal<"closed">;
+      status: Literals<
+        readonly [
+          "answered",
+          "declined",
+          "withdrawn",
+          "expired",
+          "cancelled",
+          "undeliverable",
+        ]
+      >;
+    }>,
+    Struct<{
+      result: Literal<"not_found">;
+    }>,
+    Struct<{
+      result: Literal<"refused">;
+      reason: Literal<"not_sender">;
+    }>,
+  ]
+>;
+```
+
+Outcome of the Agent an Ask waits on passing it on.
+
+---
+
+### EscalateInput
+
+```ts
+const EscalateInput: Struct<{
+  askId: String;
+}>;
+```
+
+The Agent's request to pass an Ask on; the caller is host context.
+
+---
+
 ### AnswerFlowInput
 
 ```ts
@@ -298,37 +448,11 @@ const AnswerFlowInput: Union<
           text: optionalKey<String>;
         }>
       >;
-      stage: Literal<"multiple">;
-      selection: String;
-    }>,
-    Struct<{
-      askId: String;
-      requestId: String;
-      index: Number;
-      answers: $Record<
-        String,
-        Struct<{
-          selected: $Array<String>;
-          text: optionalKey<String>;
-        }>
-      >;
-      stage: Literal<"selection">;
-      selection: String;
-    }>,
-    Struct<{
-      askId: String;
-      requestId: String;
-      index: Number;
-      answers: $Record<
-        String,
-        Struct<{
-          selected: $Array<String>;
-          text: optionalKey<String>;
-        }>
-      >;
-      stage: Literal<"text">;
-      selected: $Array<String>;
-      text: String;
+      stage: Literal<"decision">;
+      answer: Struct<{
+        selected: $Array<String>;
+        text: optionalKey<String>;
+      }>;
     }>,
     Struct<{
       askId: String;
@@ -338,7 +462,7 @@ const AnswerFlowInput: Union<
 >;
 ```
 
-The ordinary /answer conversation carries its draft between typed steps.
+The answer conversation carries its draft between decision steps.
 
 ---
 
@@ -353,25 +477,33 @@ host.
 
 #### Type Declaration
 
-| Name                                          | Type                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Default value     | Description                                            |
-| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------- | ------------------------------------------------------ |
-| <a id="property-id"></a> `id`                 | `string` & `Brand`\<`"ExtensionId"`\>                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | -                 | Stable extension identity.                             |
-| <a id="property-commands"></a> `commands`     | `object`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | -                 | Human question controls admitted by the Session owner. |
-| `commands.answerFlow`                         | `object`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | -                 | Advance the server-owned answer conversation.          |
-| `commands.answerFlow.scope`                   | `"session"`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | `"session"`       | The Session owns its asks and replies.                 |
-| `commands.answerFlow.input`                   | `Union`\<readonly \[`Struct`\<\{ `askId`: `String`; `requestId`: `String`; `index`: `Number`; `answers`: `$Record`\<`String`, `Struct`\<\{ `selected`: `$Array`\<...\>; `text`: `optionalKey`\<...\>; \}\>\>; `stage`: `Literal`\<`"multiple"`\>; `selection`: `String`; \}\>, `Struct`\<\{ `askId`: `String`; `requestId`: `String`; `index`: `Number`; `answers`: `$Record`\<`String`, `Struct`\<\{ `selected`: `$Array`\<...\>; `text`: `optionalKey`\<...\>; \}\>\>; `stage`: `Literal`\<`"selection"`\>; `selection`: `String`; \}\>, `Struct`\<\{ `askId`: `String`; `requestId`: `String`; `index`: `Number`; `answers`: `$Record`\<`String`, `Struct`\<\{ `selected`: `$Array`\<...\>; `text`: `optionalKey`\<...\>; \}\>\>; `stage`: `Literal`\<`"text"`\>; `selected`: `$Array`\<`String`\>; `text`: `String`; \}\>, `Struct`\<\{ `askId`: `String`; \}\>, `Struct`\<\{ \}\>\]\> | `AnswerFlowInput` | Decode the current answer-draft step.                  |
-| `commands.answerFlow.output`                  | `declare`\<`WhistleCatalogStepV1`, `WhistleCatalogStepV1`\>                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | `CatalogStep`     | Return the next human conversation step.               |
-| `commands.answer`                             | `object`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | -                 | Submit a person's completed answers.                   |
-| `commands.answer.scope`                       | `"session"`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | `"session"`       | The Session owns this ask.                             |
-| `commands.answer.input`                       | `Struct`\<\{ `askId`: `String`; `requestId`: `String`; `answers`: `$Record`\<`String`, `Struct`\<\{ `selected`: `$Array`\<`String`\>; `text`: `optionalKey`\<`String`\>; \}\>\>; \}\>                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | `AnswerInput`     | Decode the answer submission.                          |
-| `commands.answer.output`                      | `Union`\<readonly \[`Struct`\<\{ `result`: `Literal`\<`"accepted"`\>; `via`: `Literals`\<readonly \[`"in_turn"`, `"follow_up"`\]\>; \}\>, `Struct`\<\{ `result`: `Literal`\<`"closed"`\>; `status`: `Literals`\<readonly \[`"answered"`, `"declined"`, `"withdrawn"`, `"expired"`, `"cancelled"`, `"undeliverable"`\]\>; \}\>, `Struct`\<\{ `result`: `Literal`\<`"not_found"`\>; \}\>\]\>                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | `HumanResult`     | Return admission or the ask's terminal state.          |
-| `commands.decline`                            | `object`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | -                 | Decline an ask with an optional note.                  |
-| `commands.decline.scope`                      | `"session"`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | `"session"`       | The Session owns this ask.                             |
-| `commands.decline.input`                      | `Struct`\<\{ `askId`: `String`; `requestId`: `String`; `note`: `optionalKey`\<`String`\>; \}\>                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | `DeclineInput`    | Decode the decline submission.                         |
-| `commands.decline.output`                     | `Union`\<readonly \[`Struct`\<\{ `result`: `Literal`\<`"accepted"`\>; `via`: `Literals`\<readonly \[`"in_turn"`, `"follow_up"`\]\>; \}\>, `Struct`\<\{ `result`: `Literal`\<`"closed"`\>; `status`: `Literals`\<readonly \[`"answered"`, `"declined"`, `"withdrawn"`, `"expired"`, `"cancelled"`, `"undeliverable"`\]\>; \}\>, `Struct`\<\{ `result`: `Literal`\<`"not_found"`\>; \}\>\]\>                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | `HumanResult`     | Return admission or the ask's terminal state.          |
-| `commands.list`                               | `object`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | -                 | Read the Session's open asks.                          |
-| `commands.list.scope`                         | `"session"`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | `"session"`       | The Session owns the ask collection.                   |
-| `commands.list.input`                         | `Struct`\<\{ \}\>                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | -                 | No additional arguments are required.                  |
-| `commands.list.output`                        | `Struct`\<\{ `asks`: `$Array`\<`Struct`\<\{ `askId`: `String`; `questions`: `$Array`\<`Struct`\<\{ `id`: ...; `header`: ...; `question`: ...; `options`: ...; `multiple`: ...; \}\>\>; `status`: `Literals`\<readonly \[`"live"`, `"parked"`\]\>; `createdAt`: `Number`; `expiresAt`: `NullOr`\<`Number`\>; \}\>\>; \}\>                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | `AskProjection`   | Decode the currently visible asks.                     |
-| <a id="property-projection"></a> `projection` | `object`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | -                 | Open asks visible to Session clients.                  |
-| `projection.schema`                           | `Struct`\<\{ `asks`: `$Array`\<`Struct`\<\{ `askId`: `String`; `questions`: `$Array`\<`Struct`\<\{ `id`: `String`; `header`: `String`; `question`: `String`; `options`: `$Array`\<...\>; `multiple`: `optionalKey`\<...\>; \}\>\>; `status`: `Literals`\<readonly \[`"live"`, `"parked"`\]\>; `createdAt`: `Number`; `expiresAt`: `NullOr`\<`Number`\>; \}\>\>; \}\>                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | `AskProjection`   | Decoder for projected asks.                            |
+| Name                                          | Type                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Default value     | Description                                                             |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- | ----------------------------------------------------------------------- |
+| <a id="property-id"></a> `id`                 | `string` & `Brand`\<`"ExtensionId"`\>                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | -                 | Stable extension identity.                                              |
+| <a id="property-commands"></a> `commands`     | `object`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | -                 | Human question controls admitted by the Session owner.                  |
+| `commands.answerFlow`                         | `object`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | -                 | Advance the server-owned answer conversation.                           |
+| `commands.answerFlow.scope`                   | `"session"`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | `"session"`       | The Session owns its asks and replies.                                  |
+| `commands.answerFlow.input`                   | `Union`\<readonly \[`Struct`\<\{ `askId`: `String`; `requestId`: `String`; `index`: `Number`; `answers`: `$Record`\<`String`, `Struct`\<\{ `selected`: `$Array`\<...\>; `text`: `optionalKey`\<...\>; \}\>\>; `stage`: `Literal`\<`"decision"`\>; `answer`: `Struct`\<\{ `selected`: `$Array`\<`String`\>; `text`: `optionalKey`\<`String`\>; \}\>; \}\>, `Struct`\<\{ `askId`: `String`; \}\>, `Struct`\<\{ \}\>\]\>                                                                                       | `AnswerFlowInput` | Decode the current answer-draft step.                                   |
+| `commands.answerFlow.output`                  | `declare`\<`WhistleCatalogStepV1`, `WhistleCatalogStepV1`\>                                                                                                                                                                                                                                                                                                                                                                                                                                                 | `CatalogStep`     | Return the next human conversation step.                                |
+| `commands.answer`                             | `object`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | -                 | Submit a person's completed answers.                                    |
+| `commands.answer.scope`                       | `"session"`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | `"session"`       | The Session owns this ask.                                              |
+| `commands.answer.input`                       | `Struct`\<\{ `askId`: `String`; `requestId`: `String`; `answers`: `$Record`\<`String`, `Struct`\<\{ `selected`: `$Array`\<`String`\>; `text`: `optionalKey`\<`String`\>; \}\>\>; \}\>                                                                                                                                                                                                                                                                                                                       | `AnswerInput`     | Decode the answer submission.                                           |
+| `commands.answer.output`                      | `Union`\<readonly \[`Struct`\<\{ `result`: `Literal`\<`"accepted"`\>; `via`: `Literals`\<readonly \[`"in_turn"`, `"follow_up"`\]\>; `commandId`: `optionalKey`\<`String`\>; \}\>, `Struct`\<\{ `result`: `Literal`\<`"closed"`\>; `status`: `Literals`\<readonly \[`"answered"`, `"declined"`, `"withdrawn"`, `"expired"`, `"cancelled"`, `"undeliverable"`\]\>; \}\>, `Struct`\<\{ `result`: `Literal`\<`"not_found"`\>; \}\>\]\>                                                                          | `HumanResult`     | Return admission or the ask's terminal state.                           |
+| `commands.answerAgent`                        | `object`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | -                 | Submit the answer of the Agent this Ask waits on; never a human answer. |
+| `commands.answerAgent.scope`                  | `"session"`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | `"session"`       | The child Session owns the Ask; caller authority is host context.       |
+| `commands.answerAgent.input`                  | `Struct`\<\{ `askId`: `String`; `requestId`: `String`; `answers`: `$Record`\<`String`, `Struct`\<\{ `selected`: `$Array`\<`String`\>; `text`: `optionalKey`\<`String`\>; \}\>\>; \}\>                                                                                                                                                                                                                                                                                                                       | `AnswerInput`     | Decode the answer submission without any caller-supplied actor.         |
+| `commands.answerAgent.output`                 | `Struct`\<\{ `result`: `Union`\<readonly \[`Union`\<readonly \[`Struct`\<\{ `result`: ...; `via`: ...; `commandId`: ...; \}\>, `Struct`\<\{ `result`: ...; `status`: ...; \}\>, `Struct`\<\{ `result`: ...; \}\>\]\>, `Struct`\<\{ `result`: `Literal`\<`"refused"`\>; `reason`: `Literal`\<`"not_sender"`\>; \}\>\]\>; `answeredBy`: `Struct`\<\{ `kind`: `Literal`\<`"agent"`\>; `agentId`: `String`; \}\>; \}\>                                                                                          | -                 | Attribute the accepted answer to its authenticated Agent.               |
+| `commands.escalateAgent`                      | `object`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | -                 | Pass the Ask on from the Agent it waits on; never a human action.       |
+| `commands.escalateAgent.scope`                | `"session"`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | `"session"`       | The child Session owns the Ask; caller authority is host context.       |
+| `commands.escalateAgent.input`                | `Struct`\<\{ `askId`: `String`; \}\>                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | `EscalateInput`   | Decode the escalation without any caller-supplied recipient.            |
+| `commands.escalateAgent.output`               | `Union`\<readonly \[`Struct`\<\{ `result`: `Literal`\<`"escalated"`\>; `to`: `Literal`\<`"person"`\>; \}\>, `Struct`\<\{ `result`: `Literal`\<`"closed"`\>; `status`: `Literals`\<readonly \[`"answered"`, `"declined"`, `"withdrawn"`, `"expired"`, `"cancelled"`, `"undeliverable"`\]\>; \}\>, `Struct`\<\{ `result`: `Literal`\<`"not_found"`\>; \}\>, `Struct`\<\{ `result`: `Literal`\<`"refused"`\>; `reason`: `Literal`\<`"not_sender"`\>; \}\>\]\>                                                  | `EscalateResult`  | Where the Ask waits now, or why it did not move.                        |
+| `commands.decline`                            | `object`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | -                 | Decline an ask with an optional note.                                   |
+| `commands.decline.scope`                      | `"session"`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | `"session"`       | The Session owns this ask.                                              |
+| `commands.decline.input`                      | `Struct`\<\{ `askId`: `String`; `requestId`: `String`; `note`: `optionalKey`\<`String`\>; \}\>                                                                                                                                                                                                                                                                                                                                                                                                              | `DeclineInput`    | Decode the decline submission.                                          |
+| `commands.decline.output`                     | `Union`\<readonly \[`Struct`\<\{ `result`: `Literal`\<`"accepted"`\>; `via`: `Literals`\<readonly \[`"in_turn"`, `"follow_up"`\]\>; `commandId`: `optionalKey`\<`String`\>; \}\>, `Struct`\<\{ `result`: `Literal`\<`"closed"`\>; `status`: `Literals`\<readonly \[`"answered"`, `"declined"`, `"withdrawn"`, `"expired"`, `"cancelled"`, `"undeliverable"`\]\>; \}\>, `Struct`\<\{ `result`: `Literal`\<`"not_found"`\>; \}\>\]\>                                                                          | `HumanResult`     | Return admission or the ask's terminal state.                           |
+| `commands.list`                               | `object`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | -                 | Read the Session's open asks.                                           |
+| `commands.list.scope`                         | `"session"`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | `"session"`       | The Session owns the ask collection.                                    |
+| `commands.list.input`                         | `Struct`\<\{ \}\>                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | -                 | No additional arguments are required.                                   |
+| `commands.list.output`                        | `Struct`\<\{ `asks`: `$Array`\<`Struct`\<\{ `askId`: `String`; `waitingOn`: `optionalKey`\<`Struct`\<\{ `agentId`: ...; `sessionId`: ...; `name`: ...; \}\>\>; `questions`: `$Array`\<`Struct`\<\{ `id`: ...; `header`: ...; `question`: ...; `options`: ...; `multiple`: ...; \}\>\>; `status`: `Literals`\<readonly \[`"live"`, `"parked"`\]\>; `createdAt`: `Number`; `expiresAt`: `NullOr`\<`Number`\>; \}\>\>; \}\>                                                                                    | `AskProjection`   | Decode the currently visible asks.                                      |
+| <a id="property-projection"></a> `projection` | `object`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | -                 | Open asks visible to Session clients.                                   |
+| `projection.schema`                           | `Struct`\<\{ `asks`: `$Array`\<`Struct`\<\{ `askId`: `String`; `waitingOn`: `optionalKey`\<`Struct`\<\{ `agentId`: `NonEmptyString`; `sessionId`: `NonEmptyString`; `name`: `NonEmptyString`; \}\>\>; `questions`: `$Array`\<`Struct`\<\{ `id`: `String`; `header`: `String`; `question`: `String`; `options`: `$Array`\<...\>; `multiple`: `optionalKey`\<...\>; \}\>\>; `status`: `Literals`\<readonly \[`"live"`, `"parked"`\]\>; `createdAt`: `Number`; `expiresAt`: `NullOr`\<`Number`\>; \}\>\>; \}\> | `AskProjection`   | Decoder for projected asks.                                             |

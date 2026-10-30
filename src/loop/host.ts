@@ -368,6 +368,17 @@ function fire(ctx: Context, sessionId: string, dueAt: number, now: number) {
         },
       }),
     );
+    // The Agent owner will pause this loop after flipping its archive flag.
+    // If this timer wins that short interval, keep the loop resumable instead
+    // of treating an intentional archive refusal as a permanent failed run.
+    if (Result.isFailure(admitted) && admitted.failure.reason === "archived") {
+      yield* arm(
+        ctx,
+        { ...loop, lastError: admitted.failure.message },
+        now + 30_000,
+      );
+      return yield* ctx.observe(sessionId);
+    }
     if (Result.isFailure(admitted) || admitted.success._tag === "NotReady") {
       yield* commitLoop(ctx, {
         ...loop,
@@ -646,6 +657,23 @@ function stopLoop(ctx: Context, sessionId: string, reason?: string) {
   });
 }
 
+/** Match and mutate within the same extension command transaction. */
+function controlIdentifiedLoop(
+  ctx: Context,
+  target: Readonly<{ sessionId: string; loopId: string }>,
+  action: "pause" | "stop",
+) {
+  return requireLoop(ctx, target.sessionId).pipe(
+    Effect.flatMap((loop) =>
+      loop.loopId !== target.loopId
+        ? Effect.fail(conflict("Session loop has been replaced"))
+        : action === "pause"
+          ? pauseLoop(ctx, target.sessionId)
+          : stopLoop(ctx, target.sessionId),
+    ),
+  );
+}
+
 function cronForInterval(value: number, unit: string): string | undefined {
   if (unit === "m" || unit === "min")
     return value > 59 ? undefined : `0 */${String(value)} * * * *`;
@@ -862,6 +890,19 @@ export const loopExtension: RosteredExtensionV0 = defineExtension({
     commands: {
       specs: loopContract.commands,
       handlers: (ctx) => ({
+        pauseLoop: ({ input }) => controlIdentifiedLoop(ctx, input, "pause"),
+        stopLoop: ({ input }) => controlIdentifiedLoop(ctx, input, "stop"),
+        list: ({ input }) =>
+          ctx.state.loops
+            .page({ after: input.after, limit: input.limit ?? 64 })
+            .pipe(
+              Effect.map((rows) =>
+                rows.map((row) => ({
+                  ...projected(row),
+                  sessionId: row.sessionId,
+                })),
+              ),
+            ),
         startSelfPaced: ({ sessionId, input }) =>
           start(ctx, sessionId, input, null),
         startFixedInterval: ({ sessionId, input }) =>

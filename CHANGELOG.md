@@ -1,5 +1,24 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.5.0
+
+### Minor Changes
+
+- Changes since 0.4.0:
+
+  - feat(loop): control identified Session Loops
+  - feat(loop): add bounded Agent-wide Loop reads
+  - feat(agents): adopt delegated goals on recipient admission
+  - feat(oyster): archive agents without deleting their work
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @fungi.computer/mycelium@0.3.0
+  - @fungi.computer/shiitake@0.7.0
+  - @fungi.computer/knapsack@0.4.1
+
 ## 0.4.0
 
 ### Minor Changes

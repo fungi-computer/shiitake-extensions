@@ -112,9 +112,8 @@ paused and `null` while active. The closed kinds are `person`, `blocked`,
 text, never a discriminator. Only blocked/stalled goals emit `goal-blocked` or
 `goal-stalled` attention, kept out of the main inbox with `inbox: false`.
 Questions and these two Goal kinds ask for a person in Herdr activity;
-person-paused, cancelled and failed goals do not. State version 6 discards
-disposable preview Goal rows from versions 4 and 5 rather than reading the
-superseded representation.
+person-paused, cancelled and failed goals do not. The current Goal state is
+version 7. Superseded preview Goal rows are not migrated to this representation.
 
 Loop tools are offered in every run. `loop.get`, `loop.start` and `loop.stop`
 work from any run of the Session, and the model may start a loop itself.

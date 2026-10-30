@@ -5,7 +5,11 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import { type SandboxRequest } from "@fungi.computer/mycelium";
 import { fromTypedSandbox } from "@fungi.computer/mycelium/effect";
-import { bindSessionExtension } from "@fungi.computer/shiitake/client";
+import {
+  bindAgentExtension,
+  bindSessionExtension,
+} from "@fungi.computer/shiitake/client";
+import { ShiitakeError } from "@fungi.computer/shiitake";
 import type { ShiitakeEffectOptions } from "@fungi.computer/shiitake/effect";
 import * as Effect from "effect/Effect";
 import { afterEach, expect, it, vi } from "vitest";
@@ -91,6 +95,126 @@ async function openLoop(
     },
   };
 }
+
+it("controls the identified Loop, not its replacement, without cancelling accepted work", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-09-26T12:00:00Z"));
+  const host = await openLoop();
+  try {
+    const directory = bindAgentExtension(host, loopContract);
+    const first = await host.loop.call("startFixedInterval", {
+      requestId: "first",
+      prompt: "Check the kiln",
+      expression: "0 * * * *",
+      timeZone: "UTC",
+    });
+    const target = { sessionId: "kiln", loopId: first.loop.loopId };
+    expect(await host.pendingWork()).toMatchObject({ pending: true });
+    await expect(directory.call("pauseLoop", target)).resolves.toMatchObject({
+      loopId: first.loop.loopId,
+      state: "paused",
+    });
+    // The already accepted first occurrence still executes after pause.
+    await host.drain();
+    expect(await host.userPrompts()).toBe(1);
+    await expect(directory.call("stopLoop", target)).resolves.toMatchObject({
+      loopId: first.loop.loopId,
+      state: "cancelled",
+    });
+    expect(await host.pendingWork()).toEqual({
+      pending: false,
+      nextWakeAt: null,
+    });
+
+    const replacement = await host.loop.call("startFixedInterval", {
+      requestId: "replacement",
+      prompt: "Check the replacement kiln",
+      expression: "0 * * * *",
+      timeZone: "UTC",
+    });
+    for (const command of ["pauseLoop", "stopLoop"] as const)
+      await expect(directory.call(command, target)).rejects.toMatchObject({
+        boundary: "store",
+        cause: "conflict",
+      });
+    expect(await host.view()).toMatchObject({
+      value: {
+        loop: { loopId: replacement.loop.loopId, state: "active" },
+      },
+    });
+    // Delete, too, leaves an already accepted occurrence and its history intact.
+    await directory.call("stopLoop", {
+      sessionId: "kiln",
+      loopId: replacement.loop.loopId,
+    });
+    await host.drain();
+    expect(await host.userPrompts()).toBe(2);
+    vi.setSystemTime(new Date("2026-09-26T16:00:00Z"));
+    await host.drain();
+    expect(await host.userPrompts()).toBe(2);
+    expect(await host.pendingWork()).toEqual({
+      pending: false,
+      nextWakeAt: null,
+    });
+  } finally {
+    await host.dispose();
+  }
+});
+
+it("pages an Agent's Loops with their Session targets without opening Session watches", async () => {
+  const host = await openLoop();
+  try {
+    const directory = bindAgentExtension(host, loopContract);
+    const started = new Map<string, string>();
+    for (const sessionId of ["zinnia", "aloe", "fern"]) {
+      const loop = bindSessionExtension(host.session(sessionId), loopContract);
+      const result = await loop.call("startFixedInterval", {
+        prompt: `Water ${sessionId}`,
+        requestId: sessionId,
+        expression: "0 * * * *",
+        timeZone: "UTC",
+      });
+      started.set(sessionId, result.loop.loopId);
+    }
+
+    await expect(directory.call("list", { limit: 2 })).resolves.toEqual([
+      expect.objectContaining({
+        sessionId: "aloe",
+        loopId: started.get("aloe"),
+        prompt: "Water aloe",
+        state: "active",
+      }),
+      expect.objectContaining({
+        sessionId: "fern",
+        loopId: started.get("fern"),
+        prompt: "Water fern",
+        state: "active",
+      }),
+    ]);
+    await expect(
+      directory.call("list", {
+        after: "fern",
+        limit: 2,
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        sessionId: "zinnia",
+        loopId: started.get("zinnia"),
+        prompt: "Water zinnia",
+        state: "active",
+      }),
+    ]);
+    await expect(
+      directory.call("list", {
+        after: "zinnia",
+        limit: 2,
+      }),
+    ).resolves.toEqual([]);
+    await expect(directory.call("list", { limit: 65 })).rejects.toThrow();
+  } finally {
+    await host.dispose();
+  }
+});
 
 it("paces a self-paced loop by the model's clamped request and ends when it stops asking", async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
@@ -244,6 +368,47 @@ it("runs a fixed interval loop on its cron cadence and coalesces missed occurren
     expect(await host.pendingWork()).toEqual({
       pending: false,
       nextWakeAt: null,
+    });
+  } finally {
+    await host.dispose();
+  }
+});
+
+it("keeps a timer refused during archive resumable until the owner pauses it", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-09-26T12:00:30Z"));
+  let archived = false;
+  const host = await openLoop({
+    admission: {
+      assertOpen: () => {
+        if (archived)
+          throw new ShiitakeError("contract", "archived", "Agent is archived");
+      },
+    },
+    model: scriptedModel([fauxAssistantMessage("first check settled")]),
+  });
+  try {
+    await host.loop.call("startFixedInterval", {
+      prompt: "Check the kiln",
+      requestId: "kiln-archive",
+      expression: "0 * * * *",
+      timeZone: "UTC",
+    });
+    await host.drain();
+    archived = true;
+    vi.setSystemTime(new Date("2026-09-26T13:00:00Z"));
+    await host.drain();
+    expect(await host.view()).toMatchObject({
+      value: { loop: { state: "active" } },
+    });
+    await host.loop.call("pause", {});
+    expect(await host.pendingWork()).toEqual({
+      pending: false,
+      nextWakeAt: null,
+    });
+    archived = false;
+    await expect(host.loop.call("resume", {})).resolves.toMatchObject({
+      state: "active",
     });
   } finally {
     await host.dispose();

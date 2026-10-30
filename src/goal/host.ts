@@ -315,7 +315,17 @@ function continueIfIdle(ctx: Context, goal: GoalRow, requestId: string) {
           : goal,
       ),
       Effect.catchTag("AdmissionError", (error) =>
-        Effect.succeed(paused(goal, "failed", error.message)),
+        error.reason === "archived"
+          ? Clock.currentTimeMillis.pipe(
+              Effect.flatMap((now) =>
+                ctx.timers.set(
+                  waitTimerKey(goal.sessionId),
+                  now + ctx.config.waitCheckMs,
+                ),
+              ),
+              Effect.as(goal),
+            )
+          : Effect.succeed(paused(goal, "failed", error.message)),
       ),
     );
 }

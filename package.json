@@ -1,6 +1,6 @@
 {
   "name": "@fungi.computer/shiitake-extensions",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "author": "Levi <levi@technomancy.dev>",
   "private": false,
   "description": "Botanical's product Shiitake extensions: goal, loop and Almanac on the generic extension surface",
@@ -45,6 +45,10 @@
     "./roster": {
       "types": "./dist/roster.d.ts",
       "import": "./dist/roster.js"
+    },
+    "./schedules": {
+      "types": "./dist/schedules.d.ts",
+      "import": "./dist/schedules.js"
     },
     "./roster/conversation-agents": {
       "types": "./dist/roster/conversation-agents.d.ts",

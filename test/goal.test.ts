@@ -7,6 +7,7 @@ import { getSystemMessageText } from "@earendil-works/pi-ai";
 import type { SandboxRequest } from "@fungi.computer/mycelium";
 import { fromTypedSandbox } from "@fungi.computer/mycelium/effect";
 import { bindSessionExtension } from "@fungi.computer/shiitake/client";
+import { ShiitakeError } from "@fungi.computer/shiitake";
 import type { ShiitakeEffectOptions } from "@fungi.computer/shiitake/effect";
 import {
   defineExtension,
@@ -1005,6 +1006,63 @@ it("rechecks a waiting goal on its timer and continues once the child command se
       "Goal paused: Land the builder's work (Stalled: no progress for 3 turns)",
       "goal-stalled",
     );
+  } finally {
+    await host.dispose();
+    vi.useRealTimers();
+  }
+});
+
+it("keeps a waiting goal active when its timer reaches an archived Agent, then continues after restore", async () => {
+  const startAt = Date.parse("2026-10-26T12:00:00.000Z");
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(startAt);
+  let archived = false;
+  let live = true;
+  const subagents: SubagentSource = {
+    hasLiveChildCommand: () => live,
+    read: () => Promise.resolve({ agents: [], more: 0 }),
+    open: () => Promise.reject(new Error("No child read in settlement")),
+  };
+  const host = await openGoal(
+    {
+      admission: {
+        assertOpen: () => {
+          if (archived)
+            throw new ShiitakeError(
+              "contract",
+              "archived",
+              "Agent is archived",
+            );
+        },
+      },
+    },
+    sqliteOwner(),
+    subagents,
+  );
+  try {
+    await host.goal.call("set", {
+      objective: "Finish the child's work",
+      expectedRevision: null,
+      requestId: "archived-wait",
+    });
+    await host.drain();
+    expect(await host.commands()).toBe(1);
+    live = false;
+    archived = true;
+    vi.setSystemTime(startAt + 60_000);
+    await host.drain();
+    expect(await host.view()).toMatchObject({
+      value: { goal: { state: "active", pauseCause: null } },
+    });
+    expect(await host.commands()).toBe(1);
+    expect(await host.pendingWork()).toEqual({
+      pending: false,
+      nextWakeAt: startAt + 120_000,
+    });
+    archived = false;
+    vi.setSystemTime(startAt + 120_000);
+    await host.drain();
+    expect(await host.commands()).toBeGreaterThan(1);
   } finally {
     await host.dispose();
     vi.useRealTimers();

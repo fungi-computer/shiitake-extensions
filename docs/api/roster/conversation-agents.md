@@ -8,6 +8,24 @@
 
 # roster/conversation-agents
 
+## Type Aliases
+
+### SendingDirectory
+
+```ts
+type SendingDirectory = Omit<AgentControlDirectory, "open"> & Readonly<{
+  open: (agentId, signal) => Promise<Readonly<{
+     agent: Readonly<{
+        session: (sessionId) => Pick<..., ...>;
+     }>;
+     release: () => Promise<void>;
+  }>>;
+}>;
+```
+
+The directory a conversation sends through; opening a recipient only needs its
+Sessions' extension doors.
+
 ## Functions
 
 ### assertOrdinaryAgentCreation()
@@ -54,7 +72,7 @@ child.
 
 | Name          | Type                                                                     | Description                                                                                                                                     |
 | ------------- | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `recording()` | (`parentSessionId`, `directory`) => `AgentControlDirectory`              | Bind acceptance recording to this conversation's existing directory. One conversation's directory: its accepted creates and sends are recorded. |
+| `recording()` | \<`Directory`\>(`parentSessionId`, `directory`) => `Directory`           | Bind acceptance recording to this conversation's existing directory. One conversation's directory: its accepted creates and sends are recorded. |
 | `control()`   | (`directoryFor`) => `CapabilitySource`                                   | Agent-control tools bound to the conversation that acquires them.                                                                               |
 | `source()`    | (`directory`) => [`SubagentSource`](../subagents/host.md#subagentsource) | The footer rows for one conversation; archived and unknown Agents leave it.                                                                     |
 

@@ -113,7 +113,9 @@ export function run<A, E>(effect: Effect.Effect<A, E>): Promise<A> {
 export async function openAgent(
   owner: SqliteOwner,
   extensions: ExtensionRosterV0,
-  overrides: Partial<Pick<ShiitakeEffectOptions, "model" | "tools">> = {},
+  overrides: Partial<
+    Pick<ShiitakeEffectOptions, "model" | "tools" | "admission">
+  > = {},
   logger?: Logger.Logger<unknown, unknown>,
   /** Join a mail room, so the Agent can accept mail like a Local child. */
   mailRoom?: Parameters<typeof openHost>[1],

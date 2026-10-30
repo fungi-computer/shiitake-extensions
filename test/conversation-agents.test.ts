@@ -7,6 +7,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { goalContract } from "../src/goal/contract.js";
 import { goalExtension } from "../src/goal/host.js";
 import {
+  adoptDelegatedGoal,
   assertOrdinaryAgentCreation,
   createConversationAgents,
   oysterAgentExtensions,
@@ -163,6 +164,51 @@ it("does not count relay-held mail as accepted delegated work", async () => {
     fixture.close();
   }
 });
+
+it.each([
+  {
+    goal: "Ship the fern lane",
+    objective: "Ship the fern lane",
+  },
+  {
+    goal: undefined,
+    objective: "Build the fern lane",
+  },
+  { goal: false, objective: null },
+] as const)(
+  "a recipient can adopt held mail's accepted work on arrival ($goal)",
+  async ({ goal, objective }) => {
+    const fixture = sqliteOwner();
+    const child = await openAgent(fixture.owner, grantAll([goalExtension]));
+    try {
+      const session = child.session("held-mail-session");
+      const accepted = await run(
+        child.agent
+          .session("held-mail-session")
+          .send("\n  Build the fern lane\nThen report", {
+            requestId: "held-mail",
+            delivery: "followUp",
+          }),
+      );
+      const input = {
+        commandId: accepted.commandId,
+        text: "\n  Build the fern lane\nThen report",
+        goal,
+      };
+      await adoptDelegatedGoal(session, input);
+      await adoptDelegatedGoal(session, input);
+      const view = bindSessionExtension(session, goalContract).view(
+        await session.read(),
+      );
+      expect(view.status).toBe("running");
+      if (view.status !== "running") throw new Error("Goal was unavailable");
+      expect(view.value?.goal?.objective ?? null).toBe(objective);
+    } finally {
+      await child.close();
+      fixture.close();
+    }
+  },
+);
 
 it("bounds each live child-command tick to three owner reads, then stops at settlement", async () => {
   const fixture = sqliteOwner();

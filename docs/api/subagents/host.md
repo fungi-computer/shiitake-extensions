@@ -78,7 +78,6 @@ stops the Agent's work.
 type SubagentTiming = Readonly<{
   refreshMs: number;
   pollMs: number;
-  interestMs: number;
 }>;
 ```
 

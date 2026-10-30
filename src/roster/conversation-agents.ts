@@ -54,16 +54,20 @@ const pollMs = 2_000;
 const maxWatchMs = 30 * 60_000;
 
 /** The directory a conversation sends through; opening a recipient only needs its Sessions' extension doors. */
-type SendingDirectory = Omit<AgentControlDirectory, "open"> &
+export type SendingDirectory = Omit<AgentControlDirectory, "open"> &
   Readonly<{
+    /** Open the recipient's Session extension door for goal adoption. */
     open: (
       agentId: string,
       signal: AbortSignal,
     ) => Promise<
       Readonly<{
+        /** Recipient Agent with a Session extension door. */
         agent: Readonly<{
+          /** Address a recipient Session without loading its conversation. */
           session: (sessionId: string) => Pick<ShiitakeSession, "extension">;
         }>;
+        /** Release the acquired recipient without stopping its work. */
         release: () => Promise<void>;
       }>
     >;
@@ -79,6 +83,25 @@ function laneObjective(text: string, goal: string | undefined): string {
       .map((line) => line.trim())
       .find((line) => line !== "") ?? text.trim()
   ).slice(0, 4_000);
+}
+
+/** Adopt the first accepted turn once, even when the sender was offline at delivery. */
+export async function adoptDelegatedGoal(
+  session: Pick<ShiitakeSession, "extension">,
+  input: Readonly<{
+    text: string;
+    goal: string | false | undefined;
+    commandId: string;
+  }>,
+): Promise<void> {
+  if (input.goal === false) return;
+  await bindSessionExtension(session, goalContract).call("set", {
+    objective: laneObjective(input.text, input.goal),
+    expectedRevision: null,
+    requestId: `lane-goal:${input.commandId}`,
+    // The delegated prompt is already admitted; never enqueue it twice.
+    adoptCommandId: input.commandId,
+  });
 }
 
 /**
@@ -185,15 +208,10 @@ export function createConversationAgents(storage: WatchdogSqliteOwner) {
             ) {
               const opened = await directory.open(task.agentId, signal);
               try {
-                await bindSessionExtension(
-                  opened.agent.session(sessionId),
-                  goalContract,
-                ).call("set", {
-                  objective: laneObjective(task.text, task.goal),
-                  expectedRevision: null,
-                  requestId: `lane-goal:${accepted.commandId}`,
-                  // The send is the lane's first turn; never repeat it.
-                  adoptCommandId: accepted.commandId,
+                await adoptDelegatedGoal(opened.agent.session(sessionId), {
+                  text: task.text,
+                  goal: task.goal,
+                  commandId: accepted.commandId,
                 });
               } finally {
                 await opened.release();

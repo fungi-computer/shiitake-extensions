@@ -13,6 +13,7 @@
     "src/loop/contract.ts",
     "src/loop/host.ts",
     "src/roster.ts",
+    "src/schedules.ts",
     "src/roster/conversation-agents.ts",
     "src/plan/contract.ts",
     "src/plan/host.ts",

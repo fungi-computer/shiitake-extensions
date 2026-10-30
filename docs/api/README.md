@@ -28,6 +28,7 @@
 | [question/host](question/host.md)                           | -           |
 | [roster](roster.md)                                         | -           |
 | [roster/conversation-agents](roster/conversation-agents.md) | -           |
+| [schedules](schedules.md)                                   | -           |
 | [skills/host](skills/host.md)                               | -           |
 | [skills/source](skills/source.md)                           | -           |
 | [subagents/client](subagents/client.md)                     | -           |

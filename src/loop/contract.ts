@@ -17,6 +17,10 @@ const RequestId = Schema.String.pipe(
   Schema.check(Schema.isMinLength(1)),
   Schema.check(Schema.isMaxLength(200)),
 );
+const SessionId = Schema.String.pipe(
+  Schema.check(Schema.isMinLength(1)),
+  Schema.check(Schema.isMaxLength(256)),
+);
 /** A named cron cadence evaluated in one IANA time zone. */
 export const LoopCron = Schema.Struct({
   /** Cron expression for the fixed cadence. */
@@ -117,12 +121,61 @@ export const LoopProjection = Schema.Struct({
   loop: Loop,
 });
 
-/** Session-owned loop controls and their visible state. */
+const LoopTarget = Schema.Struct({
+  /** Session containing the identified Loop. */
+  sessionId: SessionId,
+  /** Exact Loop identity, not whichever Loop later replaces it. */
+  loopId: Loop.fields.loopId,
+});
+
+/** Session-owned current-Loop controls and Agent-scoped identified-Loop controls. */
 export const loopContract = {
   /** Stable extension identity. */
   id: ExtensionId.make("botanical-session-loop"),
-  /** Loop operations admitted by the Session owner. */
+  /** Loop operations admitted by their Agent or Session owner. */
   commands: {
+    /** Read an Agent's bounded Loop page, including each destination Session. */
+    list: {
+      /** The Agent owns the collection of its Sessions' Loops. */
+      scope: "agent",
+      /** Page strictly after a Session identity, in identity order. */
+      input: Schema.Struct({
+        /** Exclusive Session cursor. */
+        after: Schema.optionalKey(SessionId),
+        /** Maximum number of Loop rows to read. */
+        limit: Schema.optionalKey(
+          Schema.Int.pipe(
+            Schema.check(Schema.isBetween({ minimum: 1, maximum: 64 })),
+          ),
+        ),
+      }),
+      /** Public Loop values with Session targets, never private scheduling state. */
+      output: Schema.Array(
+        Schema.Struct({
+          ...Loop.fields,
+          /** Session that owns this identified Loop. */
+          sessionId: SessionId,
+        }),
+      ).pipe(Schema.check(Schema.isMaxLength(64))),
+    },
+    /** Pause an identified Loop; refuse a stale target after replacement. */
+    pauseLoop: {
+      /** The Agent owns the identified Loop and its Session. */
+      scope: "agent",
+      /** The listed Session and Loop identities must both still match. */
+      input: LoopTarget,
+      /** Return the paused Loop without cancelling accepted work. */
+      output: Loop,
+    },
+    /** Cancel an identified Loop's future occurrences, retaining accepted work. */
+    stopLoop: {
+      /** The Agent owns the identified Loop and its Session. */
+      scope: "agent",
+      /** The listed Session and Loop identities must both still match. */
+      input: LoopTarget,
+      /** Return the cancelled Loop; its Session and history remain. */
+      output: Loop,
+    },
     /** Open or answer the human loop controls. */
     loop: {
       /** The Session owns this loop. */

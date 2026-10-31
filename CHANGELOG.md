@@ -1,5 +1,22 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.6.0
+
+### Minor Changes
+
+- Changes since 0.5.0:
+
+  - feat(schedules): resume paused schedules through native owners
+  - feat(trellis): join live schedule admission and finish schema boundary
+  - feat(trellis): finish connection-bound schedules consumer
+
+### Patch Changes
+
+- Updated dependencies
+  - @fungi.computer/shiitake@0.8.0
+  - @fungi.computer/mycelium@0.3.1
+  - @fungi.computer/knapsack@0.4.2
+
 ## 0.5.0
 
 ### Minor Changes

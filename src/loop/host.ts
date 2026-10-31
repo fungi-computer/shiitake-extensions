@@ -661,7 +661,7 @@ function stopLoop(ctx: Context, sessionId: string, reason?: string) {
 function controlIdentifiedLoop(
   ctx: Context,
   target: Readonly<{ sessionId: string; loopId: string }>,
-  action: "pause" | "stop",
+  action: "pause" | "resume" | "stop",
 ) {
   return requireLoop(ctx, target.sessionId).pipe(
     Effect.flatMap((loop) =>
@@ -669,7 +669,9 @@ function controlIdentifiedLoop(
         ? Effect.fail(conflict("Session loop has been replaced"))
         : action === "pause"
           ? pauseLoop(ctx, target.sessionId)
-          : stopLoop(ctx, target.sessionId),
+          : action === "resume"
+            ? resumeLoop(ctx, target.sessionId)
+            : stopLoop(ctx, target.sessionId),
     ),
   );
 }
@@ -891,6 +893,7 @@ export const loopExtension: RosteredExtensionV0 = defineExtension({
       specs: loopContract.commands,
       handlers: (ctx) => ({
         pauseLoop: ({ input }) => controlIdentifiedLoop(ctx, input, "pause"),
+        resumeLoop: ({ input }) => controlIdentifiedLoop(ctx, input, "resume"),
         stopLoop: ({ input }) => controlIdentifiedLoop(ctx, input, "stop"),
         list: ({ input }) =>
           ctx.state.loops

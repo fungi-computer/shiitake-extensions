@@ -180,7 +180,10 @@ reason; the host can resume it without inventing a separate background loop.
 
 ## API reference and examples
 
-This package documents contracts beside source and has no generated API command.
+The [generated API reference](docs/api/README.md) follows the public
+entrypoints. Run `pnpm --dir packages/shiitake-extensions run docs:write` from
+the repository root after changing them, then
+`pnpm --dir packages/shiitake-extensions run docs` to check consistency.
 [package.json](package.json) owns these exported subpaths:
 
 | Entry                                          | Source                                                                                                    |
@@ -196,12 +199,23 @@ This package documents contracts beside source and has no generated API command.
 | `/subagents/client`                            | [Subagents client entry](src/subagents/client.ts).                                                        |
 | `/goal/client`, `/loop/client`, `/plan/client` | Client entries for [Goal](src/goal/client.ts), [Loop](src/loop/client.ts) and [Plan](src/plan/client.ts). |
 | `/roster`                                      | [Product roster and grants](src/roster.ts).                                                               |
+| `/schedules`                                   | [Schema-only schedule pages, targets and receipts](src/schedules.ts).                                     |
+| `/schedules/client`                            | [Native schedule reads and controls](src/schedules/client.ts).                                            |
 
 [Loop tests](test/loop.test.ts) exercise scheduling and mid-run pause.
 [Almanac tests](test/almanac.test.ts) exercise admission and retry.
 [Catalog tests](test/catalog.test.ts) check the human interaction contracts.
 These fixtures use the actual extension definitions on Shiitake with fake
 models.
+
+### Schedule consumers
+
+Use `/schedules` for schedule schemas and types in an App bundle. It imports the
+retained Almanac and Loop data schemas, not their native invocation clients.
+Native host integrations use `/schedules/client` for `readAgentSchedulePage`,
+`controlAgentSchedule` and `controlAgentScheduleWithContent` on an already
+admitted Agent owner. These helpers own no admission policy, store or scheduler.
+Reading and management remain separately admitted by the host.
 
 ## Home
 

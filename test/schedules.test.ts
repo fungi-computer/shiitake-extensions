@@ -12,7 +12,7 @@ import {
   controlAgentSchedule,
   controlAgentScheduleWithContent,
   readAgentSchedulePage,
-} from "../src/schedules.js";
+} from "../src/schedules/client.js";
 import { grantAll, openAgent, sqliteOwner } from "./fixtures/host.js";
 
 async function openSchedules() {
@@ -164,10 +164,17 @@ it("returns only target and native state for manage, with content available only
         ...target,
         state: "paused",
       });
+      expect(await controlAgentSchedule(host, target, "resume")).toEqual({
+        ...target,
+        state: "active",
+      });
       expect(await controlAgentSchedule(host, target, "delete")).toEqual({
         ...target,
         state: "cancelled",
       });
+      await expect(
+        controlAgentSchedule(host, target, "resume"),
+      ).rejects.toMatchObject({ boundary: "store", cause: "conflict" });
     }
     await expect(
       controlAgentScheduleWithContent(host, almanac, "delete"),
@@ -186,7 +193,7 @@ it("returns only target and native state for manage, with content available only
       expression: "0 * * * *",
       timeZone: "UTC",
     });
-    for (const action of ["pause", "delete"] as const)
+    for (const action of ["pause", "resume", "delete"] as const)
       await expect(
         controlAgentSchedule(host, loop, action),
       ).rejects.toMatchObject({

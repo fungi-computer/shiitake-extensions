@@ -49,6 +49,28 @@ owners.
 
 ---
 
+### adoptDelegatedGoal()
+
+```ts
+function adoptDelegatedGoal(session, input): Promise<void>;
+```
+
+Adopt the first accepted turn once, even when the sender was offline at
+delivery.
+
+#### Parameters
+
+| Parameter | Type                                                                                                     |
+| --------- | -------------------------------------------------------------------------------------------------------- |
+| `session` | `Pick`\<`ShiitakeSession`, `"extension"`\>                                                               |
+| `input`   | `Readonly`\<\{ `text`: `string`; `goal`: `string` \| `false` \| `undefined`; `commandId`: `string`; \}\> |
+
+#### Returns
+
+`Promise`\<`void`\>
+
+---
+
 ### createConversationAgents()
 
 ```ts

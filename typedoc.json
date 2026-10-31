@@ -14,6 +14,7 @@
     "src/loop/host.ts",
     "src/roster.ts",
     "src/schedules.ts",
+    "src/schedules/client.ts",
     "src/roster/conversation-agents.ts",
     "src/plan/contract.ts",
     "src/plan/host.ts",

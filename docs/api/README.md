@@ -29,6 +29,7 @@
 | [roster](roster.md)                                         | -           |
 | [roster/conversation-agents](roster/conversation-agents.md) | -           |
 | [schedules](schedules.md)                                   | -           |
+| [schedules/client](schedules/client.md)                     | -           |
 | [skills/host](skills/host.md)                               | -           |
 | [skills/source](skills/source.md)                           | -           |
 | [subagents/client](subagents/client.md)                     | -           |

@@ -63,10 +63,13 @@ async function openGoal(
   );
   const session = host.session("garden");
   const goal = bindSessionExtension(session, goalContract);
-  const commands = async () =>
-    (await session.read()).pending.prompts.length +
-    (await session.read()).messages.filter(({ value }) => value.role === "user")
-      .length;
+  const commands = async () => {
+    const snapshot = await session.read();
+    return (
+      snapshot.pending.prompts.length +
+      snapshot.messages.filter(({ value }) => value.role === "user").length
+    );
+  };
   return {
     ...host,
     store,

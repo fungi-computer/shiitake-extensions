@@ -394,6 +394,9 @@ it("a quiet watcher of fresh cached rows receives settlement without unchanged p
     agents: [expect.objectContaining({ state: "working" })],
   });
   const watch = await run(parent.agent.session("parent").watch());
+  expect(watch.snapshot.extensions[subagentsContract.id]).toMatchObject({
+    value: { agents: [{ state: "working" }] },
+  });
   const updates: unknown[] = [];
   const consuming = Effect.runPromiseExit(
     Stream.runForEach(watch.changes, (frame) =>
@@ -404,25 +407,19 @@ it("a quiet watcher of fresh cached rows receives settlement without unchanged p
     ),
   );
   try {
-    // Watch delivers one initial catch-up page, even at the baseline cursor.
-    await vi.waitFor(() => {
-      expect(updates).toHaveLength(1);
-    });
-    expect(updates[0]).toMatchObject({
-      value: { agents: [{ state: "working" }] },
-    });
-    // Watching a fresh cached row starts polling without another baseline
-    // refresh. Quiet live rows must not cause baseline/replay reads.
+    // The watch snapshot is the baseline, not an unchanged catch-up frame.
+    // Watching a fresh cached row still starts polling without replay reads.
     const watching = opened.count;
     await new Promise((resolve) => setTimeout(resolve, 400));
     expect(opened.count).toBeGreaterThan(watching);
-    expect(updates).toHaveLength(1);
+    expect(updates).toHaveLength(0);
     // Unwatched one-shot reads may evict each other, not the quiet live view.
     for (let index = 0; index < 64; index += 1)
       await parent.session(`unwatched-${String(index)}`).read();
     await worker.drain();
     await vi.waitFor(() => {
-      expect(updates.at(-1)).toMatchObject({
+      expect(updates).toHaveLength(1);
+      expect(updates[0]).toMatchObject({
         value: { agents: [{ state: "idle" }] },
       });
     });

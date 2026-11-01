@@ -1,5 +1,18 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.6.1
+
+### Patch Changes
+
+- Changes since 0.6.0:
+
+  - fix(shiitake): keep compactions across live feed joins
+
+- Updated dependencies
+  - @fungi.computer/shiitake@0.9.0
+  - @fungi.computer/knapsack@0.4.3
+  - @fungi.computer/mycelium@0.3.2
+
 ## 0.6.0
 
 ### Minor Changes

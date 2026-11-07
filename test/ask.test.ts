@@ -93,6 +93,9 @@ it("the shared roster sends a mail-sent run's ask to a person", async () => {
   const { store, host } = fixture;
   try {
     await fixture.park();
+    expect(
+      (await fixture.host.session("questions").read()).extensions[questionId],
+    ).toMatchObject({ status: "running" });
     const [item] = (await host.session("questions").read()).attention;
     expect(item).not.toHaveProperty("waitingOn");
     expect(item).not.toHaveProperty("inbox");
@@ -211,10 +214,22 @@ it("escalation from the Agent a routed Ask waits on makes the child need you", a
       { inbox: false, waitingOn: scout },
     );
     await expect(
-      questionOf(host).call("escalateAgent", { askId }, sender),
+      questionOf(host).call(
+        "escalateAgent",
+        { askId, note: "Needs the owner's budget decision" },
+        sender,
+      ),
     ).resolves.toEqual({ result: "escalated", to: "person" });
     const [item] = (await host.session("questions").read()).attention;
-    expect(item).toMatchObject({ id: askId, kind: "question" });
+    expect(item).toMatchObject({
+      id: askId,
+      kind: "question",
+      escalated: {
+        by: scout,
+        reason: "escalated",
+        note: "Needs the owner's budget decision",
+      },
+    });
     expect(item).not.toHaveProperty("waitingOn");
     expect(item).not.toHaveProperty("inbox");
     // It no longer waits on the Agent, which can neither answer nor escalate again.
@@ -244,13 +259,17 @@ it("escalation from the Agent a routed Ask waits on makes the child need you", a
   }
 });
 
-it("a routed ask nobody answers goes to a person at its backstop", async () => {
+it("a routed ask nobody answers still waits on its present sender a day later", async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   const createdAt = Date.parse("2026-10-27T12:00:00Z");
   vi.setSystemTime(createdAt);
   const fixture = await questionHost(
     { questions, mode: "continue" },
-    { extensions: botanicalExtensionsWithSenderRouting(), sender: scout },
+    {
+      extensions: botanicalExtensionsWithSenderRouting(),
+      sender: scout,
+      recipientStatus: () => Effect.succeed("present"),
+    },
   );
   const { store, host } = fixture;
   try {
@@ -265,22 +284,246 @@ it("a routed ask nobody answers goes to a person at its backstop", async () => {
     expect((await host.session("questions").read()).attention[0]).toMatchObject(
       { waitingOn: scout },
     );
-    vi.setSystemTime(expiresAt);
+    vi.setSystemTime(createdAt + 86_400_000);
     await host.reconcile();
     const snapshot = await host.session("questions").read();
     expect(snapshot.attention).toEqual([
       expect.objectContaining({ id: askId, kind: "question" }),
     ]);
-    expect(snapshot.attention[0]).not.toHaveProperty("waitingOn");
+    expect(snapshot.attention[0]).toMatchObject({
+      waitingOn: scout,
+      inbox: false,
+    });
     expect(snapshot.attention[0]).not.toHaveProperty("expiresAt");
     // The default never stood in for a decision: the ask is still open.
     expect(snapshot.pending.prompts).toEqual([]);
     await expect(questionOf(host).call("list", {})).resolves.toMatchObject({
-      asks: [{ askId, status: "parked" }],
+      asks: [{ askId, status: "parked", waitingOn: scout }],
     });
+    const timers = store.owner.sql
+      .exec(
+        `SELECT timer.key, job.not_before, job.state
+         FROM shiitake_extension_timers AS timer
+         JOIN watchdog_jobs AS job ON job.job_id = timer.job_id`,
+      )
+      .toArray();
+    expect(timers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: `check:${askId}`,
+          not_before: createdAt + 86_400_000 + 900_000,
+          state: "queued",
+        }),
+      ]),
+    );
   } finally {
     await host.close();
     store.close();
+  }
+});
+
+it.each(["archived", "absent"] as const)(
+  "a routed ask whose sender is %s goes to a person at creation and on a durable check",
+  async (gone) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const now = Date.parse("2026-10-31T12:00:00Z");
+    vi.setSystemTime(now);
+    for (const atCreation of [true, false]) {
+      let status: "present" | "archived" | "absent" = atCreation
+        ? gone
+        : "present";
+      const fixture = await questionHost(
+        { questions, mode: "continue" },
+        {
+          extensions: botanicalExtensionsWithSenderRouting(),
+          sender: scout,
+          recipientStatus: () => Effect.promise(() => Promise.resolve(status)),
+        },
+      );
+      try {
+        const { askId } = await fixture.park();
+        if (!atCreation) {
+          status = gone;
+          vi.setSystemTime(now + 900_000);
+          await fixture.host.reconcile();
+        }
+        const read = await fixture.host.session("questions").read();
+        expect(read.extensions[questionId]).toMatchObject({
+          status: "running",
+        });
+        const [item] = read.attention;
+        expect(item).toMatchObject({
+          id: askId,
+          escalated: { by: scout, reason: `sender_${gone}` },
+        });
+        expect(item).not.toHaveProperty("waitingOn");
+        expect(item).not.toHaveProperty("inbox");
+        await expect(
+          questionOf(fixture.host).call("list", {}),
+        ).resolves.toMatchObject({
+          asks: [{ escalated: { by: scout, reason: `sender_${gone}` } }],
+        });
+      } finally {
+        await fixture.host.close();
+        fixture.store.close();
+        vi.setSystemTime(now);
+      }
+    }
+  },
+);
+
+it("escalation bubbles one exact Session at a time, reaching a person only at the root", async () => {
+  const root = {
+    agentId: "agent-root",
+    sessionId: "root-session",
+    name: "Levi's Shiitake",
+  };
+  const fixture = await questionHost(
+    { questions, mode: "continue" },
+    {
+      extensions: botanicalExtensionsWithSenderRouting(),
+      sender: scout,
+      recipientParent: (recipient) =>
+        Effect.promise(() =>
+          Promise.resolve(recipient.agentId === scout.agentId ? root : null),
+        ),
+      recipientStatus: () => Effect.succeed("present"),
+    },
+  );
+  try {
+    const { askId } = await fixture.park();
+    await expect(
+      questionOf(fixture.host).call(
+        "escalateAgent",
+        { askId, note: "Budget" },
+        scout,
+      ),
+    ).resolves.toEqual({ result: "escalated", to: "agent", waitingOn: root });
+    expect(
+      (await fixture.host.session("questions").read()).attention[0],
+    ).toMatchObject({
+      waitingOn: root,
+      inbox: false,
+      escalated: { by: scout, reason: "escalated", note: "Budget" },
+    });
+    await expect(
+      questionOf(fixture.host).call(
+        "escalateAgent",
+        { askId, note: "Budget" },
+        scout,
+      ),
+    ).resolves.toEqual({ result: "escalated", to: "agent", waitingOn: root });
+    await expect(
+      questionOf(fixture.host).call("escalateAgent", { askId }, scout),
+    ).resolves.toEqual({ result: "refused", reason: "not_sender" });
+    await expect(
+      questionOf(fixture.host).call(
+        "escalateAgent",
+        { askId, note: "Owner needed" },
+        root,
+      ),
+    ).resolves.toEqual({ result: "escalated", to: "person" });
+    const [item] = (await fixture.host.session("questions").read()).attention;
+    expect(item).toMatchObject({
+      escalated: { by: root, reason: "escalated", note: "Owner needed" },
+    });
+    expect(item).not.toHaveProperty("waitingOn");
+  } finally {
+    await fixture.host.close();
+    fixture.store.close();
+  }
+});
+
+it.each(["archived", "absent"] as const)(
+  "explicit escalation past an %s parent retains its actor and replays",
+  async (status) => {
+    const parent = {
+      agentId: "gone-parent",
+      sessionId: "parent-session",
+      name: "Parent",
+    };
+    const fixture = await questionHost(
+      { questions, mode: "continue" },
+      {
+        extensions: botanicalExtensionsWithSenderRouting(),
+        sender: scout,
+        recipientParent: () => Effect.succeed(parent),
+        recipientStatus: (recipient) =>
+          Effect.succeed(
+            recipient.agentId === parent.agentId ? status : "present",
+          ),
+      },
+    );
+    try {
+      const { askId } = await fixture.park();
+      const escalate = () =>
+        questionOf(fixture.host).call(
+          "escalateAgent",
+          { askId, note: "Budget" },
+          scout,
+        );
+      await expect(escalate()).resolves.toEqual({
+        result: "escalated",
+        to: "person",
+      });
+      const [item] = (await fixture.host.session("questions").read()).attention;
+      expect(item).toMatchObject({
+        escalated: { by: scout, reason: "escalated", note: "Budget" },
+      });
+      expect(item).not.toHaveProperty("waitingOn");
+      await expect(escalate()).resolves.toEqual({
+        result: "escalated",
+        to: "person",
+      });
+    } finally {
+      await fixture.host.close();
+      fixture.store.close();
+    }
+  },
+);
+
+it("an asynchronous host presence check does not stop the question owner", async () => {
+  const fixture = await questionHost(
+    { questions, mode: "continue" },
+    {
+      extensions: botanicalExtensionsWithSenderRouting(),
+      sender: scout,
+      recipientStatus: () =>
+        Effect.promise(() => Promise.resolve("present" as const)),
+    },
+  );
+  try {
+    await fixture.park();
+    expect(
+      (await fixture.host.session("questions").read()).attention[0],
+    ).toMatchObject({ waitingOn: scout, inbox: false });
+  } finally {
+    await fixture.host.close();
+    fixture.store.close();
+  }
+});
+
+it("unknown sender status never escalates", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const now = Date.now();
+  const fixture = await questionHost(
+    { questions, mode: "continue" },
+    {
+      extensions: botanicalExtensionsWithSenderRouting(),
+      sender: scout,
+      recipientStatus: () => Effect.succeed("unknown"),
+    },
+  );
+  try {
+    await fixture.park();
+    vi.setSystemTime(now + 86_400_000);
+    await fixture.host.reconcile();
+    expect(
+      (await fixture.host.session("questions").read()).attention[0],
+    ).toMatchObject({ waitingOn: scout, inbox: false });
+  } finally {
+    await fixture.host.close();
+    fixture.store.close();
   }
 });
 
@@ -319,7 +562,7 @@ it("an escalated routed ask stays open for the person past the backstop", async 
   }
 });
 
-it("a routed ask with a long asker expiry still reaches a person at the backstop", async () => {
+it("a routed ask past its asker's expiry takes the asker's action, never a person", async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   const createdAt = Date.parse("2026-10-27T12:00:00Z");
   vi.setSystemTime(createdAt);
@@ -333,12 +576,16 @@ it("a routed ask with a long asker expiry still reaches a person at the backstop
   );
   const { store, host } = fixture;
   try {
-    const { askId } = await fixture.park();
-    vi.setSystemTime(createdAt + 900_000);
+    await fixture.park();
+    vi.setSystemTime(createdAt + 600 * 60_000);
     await host.reconcile();
-    const [item] = (await host.session("questions").read()).attention;
-    expect(item).toMatchObject({ id: askId, kind: "question" });
-    expect(item).not.toHaveProperty("waitingOn");
+    const snapshot = await host.session("questions").read();
+    expect(snapshot.attention).toEqual([]);
+    await expect(questionOf(host).call("list", {})).resolves.toEqual({
+      asks: [],
+    });
+    expect(snapshot.pending.prompts).toHaveLength(1);
+    expect(snapshot.pending.prompts[0]?.text).toContain("SQLite");
   } finally {
     await host.close();
     store.close();

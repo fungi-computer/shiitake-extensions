@@ -65,10 +65,10 @@ type SubagentSource = Readonly<{
 }>;
 ```
 
-The host's read-only facts. `read` returns ordinary created Agents, at most
-`limit`, with a count of the rest; `open` is the host's existing per-operation
-Agent access (an `AgentControlDirectory`'s `open` fits), and releasing it never
-stops the Agent's work.
+The host's read-only facts. `read` returns ordinary created Agents, up to
+`limit` plus a count of those not read; `open` is the host's existing
+per-operation Agent access (an `AgentControlDirectory`'s `open` fits), and
+releasing it never stops the Agent's work.
 
 ---
 

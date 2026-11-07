@@ -40,7 +40,15 @@ const live: Goal = {
 
 afterEach(() => vi.unstubAllEnvs());
 
-it.each(["person", "blocked", "stalled", "cancelled", "failed", "no-terminal"])(
+it.each([
+  "person",
+  "delegator",
+  "blocked",
+  "stalled",
+  "cancelled",
+  "failed",
+  "no-terminal",
+])(
   "decodes the closed %s pause cause without interpreting display prose",
   (kind) => {
     expect(

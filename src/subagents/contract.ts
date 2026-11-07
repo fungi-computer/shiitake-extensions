@@ -11,8 +11,16 @@ const identity = Schema.String.check(
   Schema.isMaxLength(256),
 );
 
+const escalationReason = Schema.Literals([
+  "escalated",
+  "sender_archived",
+  "sender_absent",
+]);
+
 /** The most Agents one conversation's footer lists; the rest are counted. */
 export const maximumSubagents = 16;
+/** Private status-read ceiling; children past it are explicitly not read. */
+export const maximumCountedSubagents = 256;
 
 /**
  * What the human sees for one ordinary created Agent. `waiting_on_agent` is an
@@ -45,6 +53,15 @@ export const Subagent = Schema.Struct({
   attention: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(200))),
   /** Display name of the Agent a `waiting_on_agent` child waits on. */
   waitingOn: Schema.optionalKey(identity),
+  /** Why the routed child now waits here, without losing the escalating Agent. */
+  escalated: Schema.optionalKey(
+    Schema.Struct({
+      /** Escalator's name, or the gone recipient's name on automatic promotion. */
+      by: identity,
+      /** Explicit handoff or positive evidence that the prior recipient is gone. */
+      reason: escalationReason,
+    }),
+  ),
   /** The question a waiting child asks, so a person can answer from here. */
   ask: Schema.optionalKey(
     Schema.Struct({
@@ -68,6 +85,45 @@ export const SubagentsProjection = Schema.Struct({
   agents: Schema.Array(Subagent).check(Schema.isMaxLength(maximumSubagents)),
   /** Additional created Agents not included in the visible rows. */
   more: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  /** Children beyond the status-read ceiling, never counted as idle. */
+  uncounted: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  /** Totals read across every child, before the visible row limit. */
+  counts: Schema.Struct({
+    /** Read children still working. */
+    working: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    /** Read children waiting on an Agent, never counted as needing a person. */
+    waiting_on_agent: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    /** Read children whose decision waits on a person. */
+    needs_you: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    /** Read children with no current work or decision. */
+    idle: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    /** Read children whose work failed. */
+    failed: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    /** Children whose status read failed, never counted as idle. */
+    unavailable: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  }),
+  /** Of those needing a person, how many arrived by escalation. */
+  escalated: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  /** Every waiting recipient, including children beyond the visible rows. */
+  waitingOn: Schema.Array(
+    Schema.Struct({
+      /** Display name of the Agent receiving these decisions. */
+      name: identity,
+      /** Read children waiting on this recipient name. */
+      count: Schema.Int.check(Schema.isGreaterThan(0)),
+    }),
+  ),
+  /** Every escalator of a person-bound item, for an accurate collapsed label. */
+  escalatedBy: Schema.Array(
+    Schema.Struct({
+      /** Display name retained by these escalations. */
+      name: identity,
+      /** Explicit handoff or automatic promotion, preserved in the summary. */
+      reason: escalationReason,
+      /** Read person-bound children with this parent name and reason. */
+      count: Schema.Int.check(Schema.isGreaterThan(0)),
+    }),
+  ),
   /** Whether individual rows are expanded instead of summarized. */
   expanded: Schema.Boolean,
 });

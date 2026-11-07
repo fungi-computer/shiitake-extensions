@@ -16,6 +16,7 @@ import {
   type RosteredExtensionV0,
   type FiredTimerV0,
   type SettledRunV0,
+  type ExtensionCommandCallerV0,
 } from "@fungi.computer/shiitake/extensions";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -53,7 +54,7 @@ import {
 
 /** The rules the model follows; the describe page and an active goal's prompt share them. */
 const rules =
-  "You may start a goal yourself when none is current. Before marking complete audit every requirement against evidence; complete only after actual achievement. Block only after the same external impasse for three consecutive goal turns; a blocked goal stays paused until it is resumed. You may complete, block, clear or resume a goal that paused on its own (stalled, blocked or failed work); a goal a person paused or stopped you may only complete, and only a person clears a live goal. Human pause/resume/clear remain human controls. Use plan.update_plan for multi-step work when available.";
+  "You may start a goal yourself when none is current. Before marking complete audit every requirement against evidence; complete only after actual achievement. Block only after the same external impasse for three consecutive goal turns; a blocked goal stays paused until it is resumed. You may complete, block, clear or resume a goal that paused on its own (stalled, blocked or failed work). A goal a person or your delegator paused you may only complete. Only a person or the exact Agent Session that delegated this Session pauses or clears a live goal; that delegator may resume its own pause with agents.goal. Person controls stay with the person. Use plan.update_plan for multi-step work when available.";
 
 /** Hashed prose and policy: every constant goal reads comes from here. */
 const config = {
@@ -243,6 +244,7 @@ function finishGoal(
   goal: GoalRow,
   outcome: EndedGoal["outcome"],
   reason: string | null,
+  clearedBy?: string,
 ) {
   return Effect.gen(function* () {
     const endedAt = yield* Clock.currentTimeMillis;
@@ -259,6 +261,7 @@ function finishGoal(
       endedAt,
       afterSequence,
     };
+    if (clearedBy !== undefined) Object.assign(ending, { clearedBy });
     yield* ctx.state.endings.put({
       sessionId: goal.sessionId,
       ended: [...(previous?.ended ?? []), ending].slice(-endedGoalLimit),
@@ -374,7 +377,7 @@ function settle(ctx: Context, run: SettledRunV0, subagents?: SubagentSource) {
     const waitingForChild =
       goalTurn &&
       (subagents?.hasLiveChildCommand(run.sessionId) === true ||
-        (yield* ctx.attention.awaitsPerson(run.sessionId)));
+        (yield* ctx.attention.awaitsDecision(run.sessionId)));
     const waiting = goal.waiting ?? null;
     // The run that called goal.wait fixes the fallback instant as it settles.
     const requested =
@@ -530,7 +533,7 @@ function recheckWaiting(
     }
     if (
       subagents?.hasLiveChildCommand(sessionId) === true ||
-      (yield* ctx.attention.awaitsPerson(sessionId))
+      (yield* ctx.attention.awaitsDecision(sessionId))
     )
       return yield* ctx.timers.set(
         timer.key,
@@ -778,10 +781,12 @@ function goalModule(
               ).pipe(Effect.mapError(() => conflict("Goal reason is invalid")));
               const goal = yield* currentGoal;
               // A person's pause or stop is theirs: the model may only finish it.
-              if (status !== "complete" && heldByPerson(goal))
+              if (status !== "complete" && heldByController(goal))
                 return yield* Effect.fail(
                   conflict(
-                    "A person paused or stopped this goal; only complete is available to you",
+                    goal.pauseCause?.kind === "delegator"
+                      ? "Your delegator paused this goal; only complete is available to you"
+                      : "A person paused or stopped this goal; only complete is available to you",
                   ),
                 );
               if (status === "resume") {
@@ -814,11 +819,12 @@ function goalModule(
   });
 }
 
-/** A person's pause or Esc; only a person resumes, blocks or clears it. */
-function heldByPerson(goal: GoalRow): boolean {
+/** A controller's pause: the child model may complete, never undo it. */
+function heldByController(goal: GoalRow): boolean {
   return (
     goal.state === "paused" &&
     (goal.pauseCause?.kind === "person" ||
+      goal.pauseCause?.kind === "delegator" ||
       goal.pauseCause?.kind === "cancelled")
   );
 }
@@ -971,6 +977,71 @@ function clearGoal(ctx: Context, sessionId: string) {
     yield* ctx.observe(sessionId);
     return true;
   });
+}
+
+/** Authentication is host context; authority is only this Session's immutable first delegator. */
+function controlAgent(
+  ctx: Context,
+  sessionId: string,
+  input: typeof goalContract.commands.controlAgent.input.Type,
+  caller?: ExtensionCommandCallerV0,
+) {
+  return Effect.gen(function* () {
+    if (caller === undefined)
+      return yield* Effect.fail(
+        new ExtensionCommandError({
+          reason: "rejected",
+          message: "Only an authenticated Agent can control a delegated goal",
+        }),
+      );
+    const parent = yield* ctx.sessionParent(sessionId);
+    if (
+      parent?.agentId !== caller.agentId ||
+      parent.sessionId !== caller.sessionId
+    )
+      return { result: "refused", reason: "not_delegator" } as const;
+    const current = yield* ctx.state.goals.get(sessionId);
+    if (Option.isNone(current)) return { result: "no_goal" } as const;
+    const goal = current.value;
+    if (input.action === "clear") {
+      yield* finishGoal(ctx, goal, "cleared", input.reason, caller.agentId);
+      yield* ctx.observe(sessionId);
+      return { result: "cleared" } as const;
+    }
+    if (input.action === "resume") {
+      if (goal.state !== "paused" || goal.pauseCause?.kind !== "delegator")
+        return {
+          result: "refused",
+          reason: "not_paused_by_delegator",
+        } as const;
+      return {
+        result: "resumed",
+        goal: yield* resumeGoal(ctx, sessionId),
+      } as const;
+    }
+    // A parent cannot relabel a person's pause and then resume it.
+    const next =
+      heldByController(goal) && goal.pauseCause?.kind !== "delegator"
+        ? goal
+        : paused(goal, "delegator", `${parent.name}: ${input.reason}`);
+    yield* commitGoal(ctx, next);
+    yield* ctx.observe(sessionId);
+    return { result: "paused", goal: committed(next) } as const;
+  });
+}
+
+function personOnly<A, E, R>(
+  caller: ExtensionCommandCallerV0 | undefined,
+  command: Effect.Effect<A, E, R>,
+): Effect.Effect<A, E | ExtensionCommandError, R> {
+  return caller === undefined
+    ? command
+    : Effect.fail(
+        new ExtensionCommandError({
+          reason: "rejected",
+          message: "Only a person may use person goal controls",
+        }),
+      );
 }
 
 /**
@@ -1189,12 +1260,24 @@ export function goalExtensionFor(
         commands: {
           specs: goalContract.commands,
           handlers: (ctx) => ({
-            goal: ({ sessionId, input }) => humanGoal(ctx, sessionId, input),
-            pause: ({ sessionId }) => pauseGoal(ctx, sessionId),
-            resume: ({ sessionId }) => resumeGoal(ctx, sessionId),
-            clear: ({ sessionId }: { sessionId: string }) =>
-              clearGoal(ctx, sessionId).pipe(Effect.as({})),
-            set: ({ sessionId, input }) => setGoal(ctx, sessionId, input),
+            controlAgent: ({ sessionId, input, caller }) =>
+              controlAgent(ctx, sessionId, input, caller),
+            goal: ({ sessionId, input, caller }) =>
+              personOnly(caller, humanGoal(ctx, sessionId, input)),
+            pause: ({ sessionId, caller }) =>
+              personOnly(caller, pauseGoal(ctx, sessionId)),
+            resume: ({ sessionId, caller }) =>
+              personOnly(caller, resumeGoal(ctx, sessionId)),
+            clear: ({
+              sessionId,
+              caller,
+            }: {
+              sessionId: string;
+              caller?: ExtensionCommandCallerV0;
+            }) =>
+              personOnly(caller, clearGoal(ctx, sessionId).pipe(Effect.as({}))),
+            set: ({ sessionId, input, caller }) =>
+              personOnly(caller, setGoal(ctx, sessionId, input)),
           }),
         },
       })

@@ -8,6 +8,7 @@ import {
   type SubagentsProjection,
   type SubagentState,
 } from "./contract.js";
+import { escalationLabel } from "./presentation.js";
 
 type PanelRow = ClientContributionV1["panel"][number];
 
@@ -29,9 +30,12 @@ const presentation = {
 
 /** "waiting on Shiitake": the Agent a calm child waits on, never "you". */
 function label(agent: Subagent): string {
-  return agent.state === "waiting_on_agent"
-    ? `waiting on ${agent.waitingOn ?? "its parent"}`
-    : presentation[agent.state].label;
+  const state =
+    agent.state === "waiting_on_agent"
+      ? `waiting on ${agent.waitingOn ?? "its parent"}`
+      : presentation[agent.state].label;
+  const reason = escalationLabel(agent.escalated);
+  return reason === undefined ? state : `${state} · ${reason}`;
 }
 
 function row(agent: Subagent): PanelRow {
@@ -88,18 +92,20 @@ function row(agent: Subagent): PanelRow {
  * hides an Agent waiting on them.
  */
 function summary(view: SubagentsProjection): PanelRow {
-  const count = (state: SubagentState) =>
-    view.agents.filter((agent) => agent.state === state).length;
-  const calm = view.agents.filter(
-    (agent) => agent.state === "waiting_on_agent",
-  );
+  const count = (state: SubagentState) => view.counts[state];
   // Calm children name who they wait on; only needs-you children are amber.
-  const waiting = [
-    ...new Set(calm.map((agent) => agent.waitingOn ?? "its parent")),
-  ].map(
-    (name) =>
-      `${String(calm.filter((agent) => (agent.waitingOn ?? "its parent") === name).length)} waiting on ${name}`,
+  const waiting = view.waitingOn.map(
+    ({ name, count: n }) => `${String(n)} waiting on ${name}`,
   );
+  const reasons = view.escalatedBy.map(({ name, reason, count: n }) => {
+    const label = escalationLabel({ by: name, reason });
+    return view.escalated === count("needs_you") &&
+      view.escalatedBy.length === 1
+      ? label
+      : `${String(n)} ${label}`;
+  });
+  const needsLabel =
+    reasons.length === 0 ? "needs you" : `needs you (${reasons.join("; ")})`;
   const counts = [
     ...(["working"] as const)
       .map((state) => [state, count(state)] as const)
@@ -109,9 +115,12 @@ function summary(view: SubagentsProjection): PanelRow {
     ...(["needs_you", "failed", "unavailable"] as const)
       .map((state) => [state, count(state)] as const)
       .filter(([, n]) => n > 0)
-      .map(([state, n]) => `${String(n)} ${presentation[state].label}`),
+      .map(
+        ([state, n]) =>
+          `${String(n)} ${state === "needs_you" ? needsLabel : presentation[state].label}`,
+      ),
   ];
-  const total = view.agents.length + view.more;
+  const total = count("working") + count("needs_you");
   const tone: PanelRow["tone"] =
     count("needs_you") > 0
       ? "attention"
@@ -125,6 +134,7 @@ function summary(view: SubagentsProjection): PanelRow {
     title: [
       `${String(total)} sub-agent${total === 1 ? "" : "s"}`,
       ...counts,
+      ...(view.uncounted > 0 ? [`${String(view.uncounted)} not read`] : []),
       "/agents shows them",
     ].join(" · "),
     tone,
@@ -142,12 +152,21 @@ export default defineClientEntry(subagentsContract, {
           ? [summary(view.value)]
           : [
               ...view.value.agents.map(row),
-              ...(view.value.more === 0
+              ...(view.value.more === 0 && view.value.uncounted === 0
                 ? []
                 : [
                     {
                       id: "more",
-                      title: `${String(view.value.more)} more sub-agent${view.value.more === 1 ? "" : "s"}`,
+                      title: [
+                        ...(view.value.more === 0
+                          ? []
+                          : [
+                              `${String(view.value.more)} more sub-agent${view.value.more === 1 ? "" : "s"}`,
+                            ]),
+                        ...(view.value.uncounted === 0
+                          ? []
+                          : [`${String(view.value.uncounted)} not read`]),
+                      ].join(" · "),
                       tone: "muted" as const,
                     },
                   ]),

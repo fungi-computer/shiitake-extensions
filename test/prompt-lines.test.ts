@@ -24,8 +24,10 @@ const rules = {
     "audit every requirement against evidence",
     "same external impasse for three consecutive goal turns",
     "You may complete, block, clear or resume a goal that paused on its own",
-    "a goal a person paused or stopped you may only complete",
-    "Human pause/resume/clear remain human controls",
+    "A goal a person or your delegator paused you may only complete",
+    "Only a person or the exact Agent Session that delegated this Session pauses or clears a live goal",
+    "that delegator may resume its own pause with agents.goal",
+    "Person controls stay with the person",
     "plan.update_plan",
   ],
   loop: [

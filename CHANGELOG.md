@@ -1,5 +1,36 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.6.7
+
+### Patch Changes
+
+- Changes since 0.6.6:
+
+  - fix(durability): give Watchdog delivery and timer readiness
+  - fix(runtime): keep public attention contracts fully documented
+  - fix(subagents): keep escalation provenance in composer questions
+  - fix(runtime): align attention fixtures and unsafe command inventory
+  - fix(runtime): keep escalation wire facts JSON-safe
+  - fix(questions): prepare host reads before atomic decisions
+  - fix(subagents): report children beyond the status read ceiling
+  - fix(runtime): preserve precise goal command and directory types
+  - fix(subagents): count every child before prioritizing footer rows
+  - fix(goals): authorize exact delegator pause resume and clear
+  - fix(questions): retain routed decisions and bubble explicit escalations
+  - fix(shiitake): wait for agent decisions and expose parent presence
+  - fix(subagents): retain promotion reasons and join Pi timers
+  - fix(subagents): merge integration and finish active footer counts
+
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+  - @fungi.computer/gills@0.2.2
+  - @fungi.computer/mycelium@0.3.5
+  - @fungi.computer/shiitake@0.12.0
+  - @fungi.computer/watchdog@0.1.1
+  - @fungi.computer/knapsack@0.4.6
+
 ## 0.6.6
 
 ### Patch Changes

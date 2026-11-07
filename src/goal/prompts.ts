@@ -23,6 +23,8 @@ function startedAt(epochMillis: number, now: number): string {
 /** What happened, by the typed cause and never by the goal's own words. */
 const pausedSummary = {
   person: "You paused this goal.",
+  delegator:
+    "The exact Session that delegated this work paused the goal. It may resume its own pause; you may resume or clear it too.",
   blocked: "The Agent is stuck and needs you.",
   stalled: "No progress for 3 turns, so Fungi paused it.",
   cancelled: "You stopped the goal's turn.",

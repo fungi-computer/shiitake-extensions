@@ -349,6 +349,12 @@ it("runs a fixed interval loop on its cron cadence and coalesces missed occurren
     });
 
     await host.loop.call("pause", {});
+    // Watchdog settles a queued cancellation on the next tick (README: queued
+    // cancellation); it is pending work until then and never fires the timer.
+    expect((await host.pendingWork()).pending).toBe(true);
+    const promptsBeforeSettle = await host.userPrompts();
+    await host.drain();
+    expect(await host.userPrompts()).toBe(promptsBeforeSettle);
     expect(await host.pendingWork()).toEqual({
       pending: false,
       nextWakeAt: null,
@@ -365,6 +371,11 @@ it("runs a fixed interval loop on its cron cadence and coalesces missed occurren
       boundary: "store",
       cause: "conflict",
     });
+    // The stop cancels the re-armed job; it settles on the next tick, unfired.
+    expect((await host.pendingWork()).pending).toBe(true);
+    const promptsBeforeStopSettle = await host.userPrompts();
+    await host.drain();
+    expect(await host.userPrompts()).toBe(promptsBeforeStopSettle);
     expect(await host.pendingWork()).toEqual({
       pending: false,
       nextWakeAt: null,
@@ -402,6 +413,12 @@ it("keeps a timer refused during archive resumable until the owner pauses it", a
       value: { loop: { state: "active" } },
     });
     await host.loop.call("pause", {});
+    // Watchdog settles a queued cancellation on the next tick (README: queued
+    // cancellation); it is pending work until then and never fires the timer.
+    expect((await host.pendingWork()).pending).toBe(true);
+    const promptsBeforeSettle = await host.userPrompts();
+    await host.drain();
+    expect(await host.userPrompts()).toBe(promptsBeforeSettle);
     expect(await host.pendingWork()).toEqual({
       pending: false,
       nextWakeAt: null,
@@ -540,6 +557,12 @@ it("preserves a fixed-interval retry deadline across pause and resume", async ()
     await expect(host.loop.call("resume", {})).resolves.toMatchObject({
       nextDueAt: retryAt,
     });
+    // Watchdog settles a queued cancellation on the next tick (README: queued
+    // cancellation); it is pending work until then and never fires the timer.
+    expect((await host.pendingWork()).pending).toBe(true);
+    const promptsBeforeSettle = await host.userPrompts();
+    await host.drain();
+    expect(await host.userPrompts()).toBe(promptsBeforeSettle);
     expect(await host.pendingWork()).toEqual({
       pending: false,
       nextWakeAt: retryAt,

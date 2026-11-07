@@ -216,6 +216,15 @@ it("fires a recurring schedule on its cron cadence and coalesces missed occurren
     await expect(
       host.almanac.call("pause", { scheduleId: "hourly" }),
     ).resolves.toMatchObject({ state: "paused" });
+    // Watchdog settles a queued cancellation on the next tick (README: queued
+    // cancellation); it is pending work until then and never fires the timer.
+    expect((await host.pendingWork()).pending).toBe(true);
+    const userMessages = async () =>
+      (await host.messages("garden")).filter(({ role }) => role === "user")
+        .length;
+    const promptsBeforeSettle = await userMessages();
+    await host.drain();
+    expect(await userMessages()).toBe(promptsBeforeSettle);
     expect(await host.pendingWork()).toEqual({
       pending: false,
       nextWakeAt: null,

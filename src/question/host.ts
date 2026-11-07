@@ -8,6 +8,9 @@ import {
   type ExtensionContextV0,
   type ExtensionCommandCallerV0,
   AttentionRecipientSchema,
+  type AttentionRecipient,
+  AttentionEscalationSchema,
+  type AttentionEscalation,
   type SettledRunV0,
 } from "@fungi.computer/shiitake/extensions";
 import * as Clock from "effect/Clock";
@@ -36,8 +39,8 @@ import { advanceAnswerFlow, type FlowInput } from "./answer-flow.js";
 const config = {
   maximumOpen: 4,
   liveWindowMs: 600_000,
-  // No Agent holds a routed ask forever: past this a person decides.
-  routedEscalationMs: 900_000,
+  // Check presence, never escalate merely because a present Agent took time.
+  senderCheckMs: 900_000,
   routesToSender: false,
   idle: "Need a person's decision? forage.describe({path:'question'}) first.",
   guide:
@@ -70,6 +73,7 @@ type Response = Schema.Schema.Type<typeof Response>;
 const AskRow = Schema.Struct({
   askId: OpenAsk.fields.askId,
   waitingOn: Schema.optional(AttentionRecipientSchema),
+  escalated: Schema.optional(AttentionEscalationSchema),
   questions: Questions,
   status: OpenAsk.fields.status,
   createdAt: OpenAsk.fields.createdAt,
@@ -222,7 +226,7 @@ function closeAsk(
     yield* ctx.state.asks.remove(row.askId);
     if (row.expiry !== null) yield* ctx.timers.cancel(`ask:${row.askId}`);
     if (row.waitingOn !== undefined)
-      yield* ctx.timers.cancel(routeTimer(row.askId));
+      yield* ctx.timers.cancel(checkTimer(row.askId));
     yield* ctx.attention.clear(row.sessionId, row.askId);
     yield* ctx.observe(row.sessionId);
   });
@@ -371,6 +375,8 @@ function project(row: AskRow): OpenAsk {
     createdAt: row.createdAt,
     expiresAt: row.expiry?.at ?? null,
   };
+  if (row.escalated !== undefined)
+    Object.assign(open, { escalated: row.escalated });
   return row.waitingOn === undefined
     ? open
     : { ...open, waitingOn: row.waitingOn };
@@ -494,13 +500,6 @@ function expireAsk(ctx: Context, row: AskRow, now: number) {
   return Effect.gen(function* () {
     if (row.expiry === null || now < row.expiry.at || row.pending !== null)
       return undefined;
-    if (row.waitingOn !== undefined) {
-      // Nobody answered in time. A person decides next; the default never
-      // stands in for a decision no person has seen.
-      yield* ctx.timers.cancel(`ask:${row.askId}`);
-      yield* escalateAsk(ctx, { ...row, expiry: null });
-      return undefined;
-    }
     const response: Response =
       row.expiry.action === "stop"
         ? { status: "expired", action: "stop" }
@@ -681,6 +680,8 @@ function askAttention(row: AskRow) {
     summary: row.questions.map((question) => question.header).join(", "),
     since: row.createdAt,
   };
+  if (row.escalated !== undefined)
+    Object.assign(item, { escalated: row.escalated });
   const timed =
     row.expiry === null ? item : { ...item, expiresAt: row.expiry.at };
   return row.waitingOn === undefined
@@ -689,19 +690,21 @@ function askAttention(row: AskRow) {
 }
 
 /**
- * The durable backstop of an ask that waits on an Agent. It is separate from
- * the asker's own expiry, so it always hands the ask to a person and never
- * applies a default answer.
+ * Durable presence checks are separate from the asker's own expiry.
  */
-function routeTimer(askId: string): string {
-  return `route:${askId}`;
+function checkTimer(askId: string): string {
+  return `check:${askId}`;
 }
 
-/** Hand an ask to a person: it stops waiting on any Agent and needs them. */
-function escalateAsk(ctx: Context, row: AskRow) {
+/** Hand an ask to a person, preserving why it left the Agent chain. */
+function escalateAsk(
+  ctx: Context,
+  row: AskRow,
+  escalated: AttentionEscalation,
+) {
   return Effect.gen(function* () {
-    const moved: AskRow = { ...row, waitingOn: undefined };
-    yield* ctx.timers.cancel(routeTimer(row.askId));
+    const moved: AskRow = { ...row, waitingOn: undefined, escalated };
+    yield* ctx.timers.cancel(checkTimer(row.askId));
     yield* ctx.state.asks.put(moved);
     yield* ctx.attention.set(row.sessionId, askAttention(moved));
     yield* ctx.observe(row.sessionId);
@@ -714,6 +717,8 @@ function escalateFromAgent(
   sessionId: string,
   askId: string,
   caller: ExtensionCommandCallerV0,
+  note?: string,
+  next?: AttentionRecipient | null,
 ) {
   return Effect.gen(function* () {
     const found = yield* ctx.state.asks.get(askId);
@@ -733,14 +738,59 @@ function escalateFromAgent(
       };
       return answered;
     }
-    if (!waitsOn(row, caller.agentId, caller.sessionId)) {
+    if (
+      row.waitingOn === undefined ||
+      !waitsOn(row, caller.agentId, caller.sessionId)
+    ) {
+      // Replaying the same handoff lets the host retry its idempotent parent
+      // notification after an ambiguous transport failure, without moving it again.
+      if (
+        row.escalated?.reason === "escalated" &&
+        row.escalated.by.agentId === caller.agentId &&
+        row.escalated.by.sessionId === caller.sessionId &&
+        row.escalated.note === note
+      )
+        return row.waitingOn === undefined
+          ? ({ result: "escalated", to: "person" } as const)
+          : ({
+              result: "escalated",
+              to: "agent",
+              waitingOn: row.waitingOn,
+            } as const);
       const refused: EscalateResult = {
         result: "refused",
         reason: "not_sender",
       };
       return refused;
     }
-    yield* escalateAsk(ctx, row);
+    const by = row.waitingOn;
+    // Preparation read the host outside SQLite. Do not use absent/stale evidence
+    // as proof of a root; closed/replayed items above need no host lookup.
+    if (next === undefined)
+      return { result: "refused", reason: "not_sender" } as const;
+    const provenance = {
+      by,
+      reason: "escalated",
+    } satisfies AttentionEscalation;
+    if (note !== undefined) Object.assign(provenance, { note });
+    if (next !== null) {
+      const moved: AskRow = {
+        ...row,
+        waitingOn: next,
+        escalated: provenance,
+      };
+      yield* ctx.state.asks.put(moved);
+      yield* ctx.attention.set(row.sessionId, askAttention(moved));
+      yield* ctx.timers.set(
+        checkTimer(row.askId),
+        (yield* Clock.currentTimeMillis) + ctx.config.senderCheckMs,
+      );
+      yield* ctx.observe(row.sessionId);
+      return { result: "escalated", to: "agent", waitingOn: next } as const;
+    }
+    // An explicit action keeps its actor even when the next parent is gone.
+    // Automatic presence-check promotions still name the missing recipient.
+    yield* escalateAsk(ctx, row, provenance);
     const escalated: EscalateResult = { result: "escalated", to: "person" };
     return escalated;
   });
@@ -1086,23 +1136,58 @@ export function questionExtensionFor(
       hooks: {
         onSettled: (ctx, page) =>
           Effect.forEach(page, (run) => settle(ctx, run), { discard: true }),
-        onTimer: (ctx, timer) =>
-          Effect.gen(function* () {
-            if (timer.key.startsWith("route:")) {
-              const row = yield* ctx.state.asks.get(timer.key.slice(6));
-              if (
-                Option.isSome(row) &&
-                row.value.waitingOn !== undefined &&
-                row.value.pending === null
-              )
-                yield* escalateAsk(ctx, row.value);
-              return;
-            }
-            if (!timer.key.startsWith("ask:")) return;
-            const row = yield* ctx.state.asks.get(timer.key.slice(4));
-            if (Option.isSome(row))
-              yield* expireAsk(ctx, row.value, timer.firedAt);
-          }),
+        onTimer: {
+          prepare: (ctx, timer) =>
+            Effect.gen(function* () {
+              const checked = timer.key.startsWith("check:")
+                ? ctx.state.read(({ asks }) => asks.get(timer.key.slice(6)))
+                : Option.none<AskRow>();
+              const recipient = Option.isSome(checked)
+                ? checked.value.waitingOn
+                : undefined;
+              const status =
+                recipient === undefined
+                  ? "unknown"
+                  : yield* ctx.recipientStatus(recipient);
+              return Effect.gen(function* () {
+                if (timer.key.startsWith("check:")) {
+                  const row = yield* ctx.state.asks.get(timer.key.slice(6));
+                  if (
+                    Option.isSome(row) &&
+                    row.value.waitingOn !== undefined &&
+                    row.value.pending === null
+                  ) {
+                    if (
+                      recipient !== undefined &&
+                      waitsOn(
+                        row.value,
+                        recipient.agentId,
+                        recipient.sessionId,
+                      ) &&
+                      (status === "archived" || status === "absent")
+                    )
+                      yield* escalateAsk(ctx, row.value, {
+                        by: row.value.waitingOn,
+                        reason:
+                          status === "archived"
+                            ? "sender_archived"
+                            : "sender_absent",
+                      });
+                    else
+                      yield* ctx.timers.set(
+                        checkTimer(row.value.askId),
+                        timer.firedAt + ctx.config.senderCheckMs,
+                      );
+                  }
+                  return;
+                }
+                if (!timer.key.startsWith("ask:")) return;
+                const row = yield* ctx.state.asks.get(timer.key.slice(4));
+                if (Option.isSome(row))
+                  yield* expireAsk(ctx, row.value, timer.firedAt);
+              });
+            }),
+        },
       },
       prompt: (ctx) => [{ name: "question", text: ctx.config.idle }],
       projection: {
@@ -1145,22 +1230,50 @@ export function questionExtensionFor(
                     },
                   })),
                 ),
-          escalateAgent: ({ sessionId, input, caller }) =>
-            Effect.gen(function* () {
-              if (caller === undefined)
-                return yield* Effect.fail(
-                  new ExtensionCommandError({
-                    reason: "rejected",
-                    message: "Only an authenticated Agent can escalate an Ask",
-                  }),
+          escalateAgent: {
+            prepare: ({ sessionId, input, caller }) =>
+              Effect.gen(function* () {
+                if (caller === undefined)
+                  return yield* Effect.fail(
+                    new ExtensionCommandError({
+                      reason: "rejected",
+                      message:
+                        "Only an authenticated Agent can escalate an Ask",
+                    }),
+                  );
+                const found = ctx.state.read(({ asks }) =>
+                  asks.get(input.askId),
                 );
-              return yield* escalateFromAgent(
-                ctx,
-                sessionId,
-                input.askId,
-                caller,
-              );
-            }),
+                let next: AttentionRecipient | null | undefined;
+                if (
+                  Option.isSome(found) &&
+                  found.value.sessionId === sessionId &&
+                  found.value.pending === null &&
+                  found.value.waitingOn !== undefined &&
+                  waitsOn(found.value, caller.agentId, caller.sessionId)
+                ) {
+                  const parent = yield* ctx.recipientParent(
+                    found.value.waitingOn,
+                  );
+                  if (parent === null) next = null;
+                  else {
+                    const status = yield* ctx.recipientStatus(parent);
+                    next =
+                      status === "archived" || status === "absent"
+                        ? null
+                        : parent;
+                  }
+                }
+                return escalateFromAgent(
+                  ctx,
+                  sessionId,
+                  input.askId,
+                  caller,
+                  input.note,
+                  next,
+                );
+              }),
+          },
           decline: ({ sessionId, input }) =>
             respondPerson(ctx, sessionId, { kind: "decline", ...input }),
           list: ({ sessionId }) =>
@@ -1200,121 +1313,148 @@ export function questionExtensionFor(
               output: ToolResult,
               execute: async (value, invocation) => {
                 const created = await Effect.runPromise(
-                  ctx.transact(
-                    Effect.gen(function* () {
-                      const questions = yield* Schema.decodeUnknownEffect(
-                        Questions,
-                      )(value.questions).pipe(
-                        Effect.mapError(
-                          () =>
-                            new ExtensionCommandError({
-                              reason: "invalid",
-                              message:
-                                "Invalid question identifiers or option labels",
-                            }),
-                        ),
-                      );
-                      const digest = questionDigest(
-                        sessionId,
-                        workId,
-                        questions,
-                      );
-                      const rows = yield* ctx.state.asks.page({
-                        index: sessionId,
-                        limit: ctx.config.maximumOpen,
-                      });
-                      const open = yield* Effect.forEach(rows, (row) =>
-                        row.workId === workId &&
-                        row.status === "live" &&
-                        row.runAttemptId !== runAttemptId
-                          ? parkAsk(ctx, row)
-                          : Effect.succeed(row),
-                      );
-                      const replay = yield* replayQuestion(
-                        ctx,
-                        open,
-                        workId,
-                        digest,
-                        invocation.toolCallId,
-                      );
-                      if (replay !== undefined) return replay;
-                      if (open.length === ctx.config.maximumOpen)
-                        return {
-                          status: "refused" as const,
-                          reason: "session_limit" as const,
-                          askIds: open.map((row) => row.askId),
-                        };
-                      const now = yield* Clock.currentTimeMillis;
-                      const window =
-                        invocation.deadlineAt === null
-                          ? 0
-                          : Math.max(
-                              0,
-                              Math.min(
-                                ctx.config.liveWindowMs,
-                                invocation.deadlineAt - now - deadlineReserveMs,
-                              ),
-                            );
-                      // The Agent that sent this work answers later; a live wait
-                      // would stall the turn it may itself be waiting on.
+                  ctx.transact({
+                    prepare: Effect.gen(function* () {
                       const waitingOn = ctx.config.routesToSender
                         ? yield* ctx.workSender({ sessionId, workId })
                         : null;
-                      const live =
-                        value.mode === "wait" &&
-                        window > 0 &&
-                        waitingOn === null;
-                      const existingLive = open.filter(
-                        (row) => row.workId === workId && row.status === "live",
-                      );
-                      if (live && existingLive.length > 0)
-                        return {
-                          status: "refused" as const,
-                          reason: "live_limit" as const,
-                          askIds: existingLive.map((row) => row.askId),
+                      const senderStatus =
+                        waitingOn === null
+                          ? "unknown"
+                          : yield* ctx.recipientStatus(waitingOn);
+                      return Effect.gen(function* () {
+                        const questions = yield* Schema.decodeUnknownEffect(
+                          Questions,
+                        )(value.questions).pipe(
+                          Effect.mapError(
+                            () =>
+                              new ExtensionCommandError({
+                                reason: "invalid",
+                                message:
+                                  "Invalid question identifiers or option labels",
+                              }),
+                          ),
+                        );
+                        const digest = questionDigest(
+                          sessionId,
+                          workId,
+                          questions,
+                        );
+                        const rows = yield* ctx.state.asks.page({
+                          index: sessionId,
+                          limit: ctx.config.maximumOpen,
+                        });
+                        const open = yield* Effect.forEach(rows, (row) =>
+                          row.workId === workId &&
+                          row.status === "live" &&
+                          row.runAttemptId !== runAttemptId
+                            ? parkAsk(ctx, row)
+                            : Effect.succeed(row),
+                        );
+                        const replay = yield* replayQuestion(
+                          ctx,
+                          open,
+                          workId,
+                          digest,
+                          invocation.toolCallId,
+                        );
+                        if (replay !== undefined) return replay;
+                        if (open.length === ctx.config.maximumOpen)
+                          return {
+                            status: "refused" as const,
+                            reason: "session_limit" as const,
+                            askIds: open.map((row) => row.askId),
+                          };
+                        const now = yield* Clock.currentTimeMillis;
+                        const window =
+                          invocation.deadlineAt === null
+                            ? 0
+                            : Math.max(
+                                0,
+                                Math.min(
+                                  ctx.config.liveWindowMs,
+                                  invocation.deadlineAt -
+                                    now -
+                                    deadlineReserveMs,
+                                ),
+                              );
+                        // The Agent that sent this work answers later; a live wait
+                        // would stall the turn it may itself be waiting on.
+                        const live =
+                          value.mode === "wait" &&
+                          window > 0 &&
+                          waitingOn === null;
+                        const existingLive = open.filter(
+                          (row) =>
+                            row.workId === workId && row.status === "live",
+                        );
+                        if (live && existingLive.length > 0)
+                          return {
+                            status: "refused" as const,
+                            reason: "live_limit" as const,
+                            askIds: existingLive.map((row) => row.askId),
+                          };
+                        let row: AskRow = {
+                          askId: nanoid(),
+                          waitingOn: waitingOn ?? undefined,
+                          sessionId,
+                          workId,
+                          digest,
+                          questions,
+                          status: live ? "live" : "parked",
+                          runAttemptId: live ? runAttemptId : null,
+                          pending: null,
+                          createdAt: now,
+                          expiry:
+                            "onExpire" in value
+                              ? {
+                                  at:
+                                    now + value.onExpire.afterMinutes * 60_000,
+                                  action: value.onExpire.action,
+                                }
+                              : null,
                         };
-                      const row: AskRow = {
-                        askId: nanoid(),
-                        waitingOn: waitingOn ?? undefined,
-                        sessionId,
-                        workId,
-                        digest,
-                        questions,
-                        status: live ? "live" : "parked",
-                        runAttemptId: live ? runAttemptId : null,
-                        pending: null,
-                        createdAt: now,
-                        expiry:
-                          "onExpire" in value
-                            ? {
-                                at: now + value.onExpire.afterMinutes * 60_000,
-                                action: value.onExpire.action,
-                              }
-                            : null,
-                      };
-                      yield* ctx.state.asks.put(row);
-                      if (row.expiry !== null)
-                        yield* ctx.timers.set(
-                          `ask:${row.askId}`,
-                          row.expiry.at,
-                        );
-                      // Whatever the asker chose, an ask nobody takes up reaches a person.
-                      if (row.waitingOn !== undefined)
-                        yield* ctx.timers.set(
-                          routeTimer(row.askId),
-                          now + ctx.config.routedEscalationMs,
-                        );
-                      yield* ctx.attention.set(sessionId, askAttention(row));
-                      yield* ctx.observe(sessionId);
-                      return live
-                        ? {
-                            status: "waiting" as const,
-                            askId: row.askId,
-                            until: now + window,
-                          }
-                        : { status: "parked" as const, askId: row.askId };
+                        if (row.waitingOn !== undefined) {
+                          if (
+                            senderStatus === "archived" ||
+                            senderStatus === "absent"
+                          )
+                            row = {
+                              ...row,
+                              waitingOn: undefined,
+                              escalated: {
+                                by: row.waitingOn,
+                                reason:
+                                  senderStatus === "archived"
+                                    ? "sender_archived"
+                                    : "sender_absent",
+                              },
+                            };
+                        }
+                        yield* ctx.state.asks.put(row);
+                        if (row.expiry !== null)
+                          yield* ctx.timers.set(
+                            `ask:${row.askId}`,
+                            row.expiry.at,
+                          );
+                        // Silence never escalates; only explicit action or evidence the sender is gone.
+                        if (row.waitingOn !== undefined)
+                          yield* ctx.timers.set(
+                            checkTimer(row.askId),
+                            now + ctx.config.senderCheckMs,
+                          );
+                        yield* ctx.attention.set(sessionId, askAttention(row));
+                        yield* ctx.observe(sessionId);
+                        return live
+                          ? {
+                              status: "waiting" as const,
+                              askId: row.askId,
+                              until: now + window,
+                            }
+                          : { status: "parked" as const, askId: row.askId };
+                      });
                     }),
-                  ),
+                  }),
                 );
                 const result =
                   created.status === "waiting"

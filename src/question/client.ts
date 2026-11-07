@@ -13,9 +13,20 @@ export default defineClientEntry(questionContract, {
         ? []
         : view.value.asks.map((ask) => {
             const first = ask.questions[0];
-            const title = `${first?.question ?? "Question"}${ask.questions.length > 1 ? ` (+${String(ask.questions.length - 1)} more)` : ""}`;
-            const detail =
+            let title = `${first?.question ?? "Question"}${ask.questions.length > 1 ? ` (+${String(ask.questions.length - 1)} more)` : ""}`;
+            let detail =
               first?.options.map((option) => option.label).join(" · ") ?? "";
+            if (ask.escalated !== undefined) {
+              const { by, reason, note } = ask.escalated;
+              const label =
+                reason === "escalated"
+                  ? `escalated by ${by.name}`
+                  : reason === "sender_archived"
+                    ? `${by.name} archived`
+                    : `${by.name} is gone`;
+              title = `${label} · ${title}`;
+              if (note !== undefined) detail = `${detail}\n${note}`;
+            }
             // An ask waiting on an Agent is calm: it never takes over the
             // composer, but a person may still answer it first.
             if (ask.waitingOn !== undefined)

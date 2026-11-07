@@ -10,6 +10,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { afterEach, expect, it, vi } from "vitest";
 import { CatalogStep } from "../src/internal/catalog.js";
+import { questionContract } from "../src/question/contract.js";
 import subagentsClient from "../src/subagents/client.js";
 import {
   subagentsContract,
@@ -287,7 +288,6 @@ it("maps working, a question for a person, an approval for a person and an unrea
   );
   await settle(parent, "parent", {
     agents: [
-      expect.objectContaining({ agentId: "agent-working", state: "working" }),
       {
         agentId: "agent-asked",
         name: "Asked",
@@ -307,6 +307,7 @@ it("maps working, a question for a person, an approval for a person and an unrea
         state: "needs_you",
         attention: "Approve files.write",
       },
+      expect.objectContaining({ agentId: "agent-working", state: "working" }),
       expect.objectContaining({ agentId: "agent-gone", state: "unavailable" }),
       expect.objectContaining({
         agentId: "agent-unlisted",
@@ -466,10 +467,157 @@ it("stops reading children once nobody watches and nothing is live", async () =>
   expect(opened.count).toBe(settled);
 });
 
+it("counts every child, including needs-you at position 20, and lists it before idle ones", async () => {
+  const idle = await child();
+  const asking = await child(grantAll([approvalExtension]));
+  await send(idle, "task");
+  await send(asking, "task");
+  await asking.session("task").extension(approvalId).call("ask", {});
+  const records = Array.from({ length: 28 }, (_, index) => ({
+    agentId: `child-${String(index)}`,
+    name: `Child ${String(index)}`,
+    sessionId: "task",
+  }));
+  const access = Object.fromEntries(
+    records.map((record, index) => [
+      record.agentId,
+      childAccess(index === 20 ? asking : idle),
+    ]),
+  );
+  const parent = await parentWith({ parent: records }, access);
+  await settle(parent, "parent", {
+    counts: {
+      needs_you: 1,
+      idle: 27,
+      working: 0,
+      waiting_on_agent: 0,
+      failed: 0,
+      unavailable: 0,
+    },
+  });
+  const view = await rows(parent, "parent");
+  expect(view?.agents).toHaveLength(15);
+  expect(view?.agents[0]).toMatchObject({
+    agentId: "child-20",
+    state: "needs_you",
+  });
+  expect(view?.more).toBe(13);
+  const slot = (await parent.session("parent").read()).extensions[
+    subagentsContract.id
+  ];
+  expect(subagentsClient.contribute?.(slot).panel[0]?.title).toContain(
+    "1 sub-agent · 1 needs you",
+  );
+});
+
+it("counts children past the 8-wide status batch, with at most 8 reads at once", async () => {
+  const idle = await child();
+  const working = await child();
+  const asking = await child(grantAll([approvalExtension]));
+  await send(idle, "task");
+  await send(working, "task", false);
+  await send(asking, "task");
+  await asking.session("task").extension(approvalId).call("ask", {});
+  let inFlight = 0;
+  let peak = 0;
+  /** Holds each status read open briefly, so a whole batch overlaps. */
+  const overlapping = (agent: SubagentAgent): SubagentAgent => ({
+    ...agent,
+    listSessions: async (after) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return await agent.listSessions(after);
+      } finally {
+        inFlight -= 1;
+      }
+    },
+  });
+  // Eleven children: the second batch (index 8 onward) holds the only
+  // needs-you and working children, so a first-batch-only count misses both.
+  const records = Array.from({ length: 11 }, (_, index) => ({
+    agentId: `child-${String(index)}`,
+    name: `Child ${String(index)}`,
+    sessionId: "task",
+  }));
+  const access = Object.fromEntries(
+    records.map((record, index) => [
+      record.agentId,
+      overlapping(
+        childAccess(index === 9 ? asking : index === 10 ? working : idle),
+      ),
+    ]),
+  );
+  const parent = await parentWith({ parent: records }, access);
+  await settle(parent, "parent", {
+    counts: {
+      needs_you: 1,
+      working: 1,
+      idle: 9,
+      waiting_on_agent: 0,
+      failed: 0,
+      unavailable: 0,
+    },
+  });
+  expect(peak).toBeGreaterThan(1);
+  expect(peak).toBeLessThanOrEqual(8);
+  const slot = (await parent.session("parent").read()).extensions[
+    subagentsContract.id
+  ];
+  expect(subagentsClient.contribute?.(slot).panel[0]?.title).toContain(
+    "2 sub-agents · 1 working · 1 needs you",
+  );
+});
+
+it("reports children past the 256-child ceiling as not read", async () => {
+  const idle = await child();
+  await send(idle, "task");
+  const records = Array.from({ length: 257 }, (_, index) => ({
+    agentId: `child-${String(index)}`,
+    name: `Child ${String(index)}`,
+    sessionId: "task",
+  }));
+  const parent = await parentWith(
+    { parent: records },
+    Object.fromEntries(
+      records.map((record) => [record.agentId, childAccess(idle)]),
+    ),
+  );
+  await settle(parent, "parent", {
+    uncounted: 1,
+    counts: {
+      working: 0,
+      needs_you: 0,
+      waiting_on_agent: 0,
+      idle: 256,
+      failed: 0,
+      unavailable: 0,
+    },
+  });
+  expect(
+    subagentsClient.contribute?.(
+      (await parent.session("parent").read()).extensions[subagentsContract.id],
+    ).panel[0]?.title,
+  ).toContain("0 sub-agents · 1 not read");
+});
+
 it("counts sub-agents past the footer bound in one more row", () => {
   const value = Schema.encodeSync(SubagentsProjection)({
     agents: [],
     more: 3,
+    uncounted: 0,
+    counts: {
+      working: 0,
+      waiting_on_agent: 0,
+      needs_you: 0,
+      idle: 3,
+      failed: 0,
+      unavailable: 0,
+    },
+    escalated: 0,
+    waitingOn: [],
+    escalatedBy: [],
     expanded: true,
   });
   const panel = subagentsClient.contribute?.({
@@ -615,6 +763,10 @@ it("a routed child reads waiting on its parent, calm, and counts apart from need
   );
   await settle(parent, "parent", {
     agents: [
+      expect.objectContaining({
+        agentId: "agent-approving",
+        state: "needs_you",
+      }),
       {
         agentId: "agent-scout",
         name: "Scout",
@@ -627,10 +779,6 @@ it("a routed child reads waiting on its parent, calm, and counts apart from need
           questions: [expect.objectContaining({ id: "storage" })],
         },
       },
-      expect.objectContaining({
-        agentId: "agent-approving",
-        state: "needs_you",
-      }),
     ],
   });
   const view = (await parent.session("parent").read()).extensions[
@@ -645,18 +793,18 @@ it("a routed child reads waiting on its parent, calm, and counts apart from need
       (await parent.session("parent").read()).extensions[subagentsContract.id],
     ),
   );
-  expect(expanded.panel[0]).toMatchObject({
+  expect(expanded.panel[1]).toMatchObject({
     title: "Scout · waiting on Shiitake",
     detail: "Which store should hold the notes?",
     tone: "muted",
   });
   // A person may always answer first: the calm row offers Answer too, but it
   // never takes over the composer.
-  expect(expanded.panel[0]?.actions).toMatchObject([
+  expect(expanded.panel[1]?.actions).toMatchObject([
     { id: "answerChild", label: "Answer" },
   ]);
-  expect(expanded.panel[0]?.actions?.[0]).not.toHaveProperty("awaiting");
-  expect(expanded.panel[1]).toMatchObject({
+  expect(expanded.panel[1]?.actions?.[0]).not.toHaveProperty("awaiting");
+  expect(expanded.panel[0]).toMatchObject({
     title: "Approving · needs you",
     tone: "attention",
   });
@@ -665,7 +813,7 @@ it("a routed child reads waiting on its parent, calm, and counts apart from need
     {
       id: "summary",
       title:
-        "2 sub-agents · 1 waiting on Shiitake · 1 needs you · /agents shows them",
+        "1 sub-agent · 1 waiting on Shiitake · 1 needs you · /agents shows them",
       tone: "attention",
     },
   ]);
@@ -703,10 +851,136 @@ it("a summary with only routed children is not amber", async () => {
   ).toEqual([
     {
       id: "summary",
-      title: "1 sub-agent · 1 waiting on Shiitake · /agents shows them",
+      title: "0 sub-agents · 1 waiting on Shiitake · /agents shows them",
       tone: "muted",
     },
   ]);
+});
+
+it.each([
+  ["present", "escalated by Shiitake"],
+  ["archived", "Shiitake archived"],
+  ["absent", "Shiitake is gone"],
+] as const)(
+  "keeps the %s parent's reason in the summary and expanded row",
+  async (status, label) => {
+    const sender = { agentId: "lead", sessionId: "parent", name: "Shiitake" };
+    const asked = await questionHost(
+      { questions, mode: "continue" },
+      {
+        sender,
+        extensions: botanicalExtensionsWithSenderRouting(),
+        recipientParent: () => Effect.succeed(null),
+        recipientStatus: () => Effect.succeed(status),
+      },
+    );
+    closers.push(asked.host);
+    const { askId } = await asked.park();
+    if (status === "present")
+      await asked.host
+        .session("questions")
+        .extension(questionContract.id)
+        .call("escalateAgent", { askId, note: "Budget" }, sender);
+    const parent = await parentWith(
+      {
+        parent: [{ agentId: "scout", name: "Scout", sessionId: "questions" }],
+      },
+      { scout: childAccess(asked.host) },
+    );
+    await settle(parent, "parent", {
+      escalated: 1,
+      escalatedBy: [
+        {
+          name: "Shiitake",
+          count: 1,
+          reason:
+            status === "present"
+              ? "escalated"
+              : status === "archived"
+                ? "sender_archived"
+                : "sender_absent",
+        },
+      ],
+    });
+    const panel = async () =>
+      subagentsClient.contribute?.(
+        (await parent.session("parent").read()).extensions[
+          subagentsContract.id
+        ],
+      ).panel;
+    expect((await panel())?.[0]?.title).toContain(`1 needs you (${label})`);
+    await bindSessionExtension(
+      parent.session("parent"),
+      subagentsContract,
+    ).call("agents", {});
+    expect((await panel())?.[0]?.title).toBe(`Scout · needs you · ${label}`);
+    const step = Schema.decodeUnknownSync(CatalogStep)(
+      await parent
+        .session("parent")
+        .extension(subagentsContract.id)
+        .call("answerChild", {
+          agentId: "scout",
+          sessionId: "questions",
+          askId,
+        }),
+    );
+    if (step.type !== "prompt")
+      throw new Error("Expected the child's question");
+    expect(step.prompt.summary).toBe(`Scout asks · ${label}`);
+  },
+);
+
+it("keeps both automatic reasons for the same parent beyond the visible rows", async () => {
+  const approving = await child(grantAll([approvalExtension]));
+  await send(approving, "write");
+  await approving.session("write").extension(approvalId).call("ask", {});
+  const records: SubagentRecord[] = Array.from({ length: 15 }, (_, index) => ({
+    agentId: `approving-${String(index)}`,
+    name: `Approving ${String(index)}`,
+    sessionId: "write",
+  }));
+  const access: Record<string, SubagentAgent> = Object.fromEntries(
+    records.map((record) => [record.agentId, childAccess(approving)]),
+  );
+  for (const status of ["archived", "absent"] as const) {
+    const asked = await questionHost(
+      { questions, mode: "continue" },
+      {
+        sender: { agentId: "lead", sessionId: "parent", name: "Shiitake" },
+        extensions: botanicalExtensionsWithSenderRouting(),
+        recipientStatus: () => Effect.succeed(status),
+      },
+    );
+    closers.push(asked.host);
+    await asked.park();
+    records.push({ agentId: status, name: status, sessionId: "questions" });
+    access[status] = childAccess(asked.host);
+  }
+  const parent = await parentWith({ parent: records }, access);
+  await settle(parent, "parent", {
+    counts: {
+      needs_you: 17,
+      working: 0,
+      waiting_on_agent: 0,
+      idle: 0,
+      failed: 0,
+      unavailable: 0,
+    },
+    escalated: 2,
+  });
+  const view = await rows(parent, "parent");
+  expect(view?.agents).toHaveLength(15);
+  expect(view?.agents.every((agent) => agent.escalated === undefined)).toBe(
+    true,
+  );
+  const slot = (await parent.session("parent").read()).extensions[
+    subagentsContract.id
+  ];
+  const title = subagentsClient.contribute?.(slot).panel[0]?.title;
+  expect(title).toContain("17 needs you");
+  expect(title).toContain("1 Shiitake archived");
+  expect(title).toContain("1 Shiitake is gone");
+  expect(title).not.toContain("escalated");
 });
 
 it("answers an escalated child's question from the parent's footer through the child's own answer flow", async () => {

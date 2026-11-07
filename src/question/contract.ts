@@ -1,5 +1,6 @@
 import {
   AttentionRecipientSchema,
+  AttentionEscalationSchema,
   ExtensionId,
 } from "@fungi.computer/shiitake/extensions";
 import * as Schema from "effect/Schema";
@@ -70,9 +71,11 @@ export const OpenAsk = Schema.Struct({
   /**
    * The Agent this ask waits on first, derived by the host from whom the
    * asking run's work came from. Absent means a person. An ask waiting on an
-   * Agent is calm: the Agent answers it or escalates it to a person.
+   * Agent is calm: the Agent answers it or escalates it to its own parent.
    */
   waitingOn: Schema.optionalKey(AttentionRecipientSchema),
+  /** Latest explicit escalation or evidence that the waiting Agent is gone. */
+  escalated: Schema.optionalKey(AttentionEscalationSchema),
   /** Decisions awaiting the person's answers. */
   questions: Questions,
   /** Whether the ask is live in a turn or parked for later. */
@@ -182,6 +185,14 @@ export const AnsweredBy = Schema.Struct({
 /** Outcome of the Agent an Ask waits on passing it on. */
 export const EscalateResult = Schema.Union([
   Schema.Struct({
+    /** The Ask was passed one authenticated parent hop upward. */
+    result: Schema.Literal("escalated"),
+    /** The next recipient is an Agent, not yet a person. */
+    to: Schema.Literal("agent"),
+    /** Exact Agent and Session that now own the decision. */
+    waitingOn: AttentionRecipientSchema,
+  }),
+  Schema.Struct({
     /** The Ask now waits on someone else. */
     result: Schema.Literal("escalated"),
     /** Whom it waits on now: a person. */
@@ -206,6 +217,8 @@ export type EscalateResult = Schema.Schema.Type<typeof EscalateResult>;
 export const EscalateInput = Schema.Struct({
   /** Ask being passed on. */
   askId: text(256),
+  /** Explanation retained with the handoff. */
+  note: Schema.optional(Schema.String.check(Schema.isMaxLength(1000))),
 });
 
 const answerStep = {

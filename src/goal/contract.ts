@@ -34,6 +34,7 @@ export const GoalPauseCause = Schema.Struct({
   /** Typed origin of the pause. */
   kind: Schema.Literals([
     "person",
+    "delegator",
     "blocked",
     "stalled",
     "cancelled",
@@ -72,9 +73,18 @@ export const EndedGoal = Schema.Struct({
   outcome: Schema.Literals(["achieved", "cleared"]),
   /**
    * The model's evidence for an achieved goal, or its explanation for
-   * clearing its own paused goal; null when a person cleared it.
+   * clearing its own paused goal, or the delegator's clear reason;
+   * null when a person cleared it.
    */
   reason: Schema.NullOr(GoalReason),
+  /**
+   * Authenticated delegating Agent id, absent for person/model endings.
+   * This ending is Session-scoped; its immutable first-delegator record
+   * retains the exact authorized Session, rather than duplicating that pair.
+   */
+  clearedBy: Schema.optionalKey(
+    Schema.NonEmptyString.check(Schema.isMaxLength(256)),
+  ),
   /** Completion time in epoch milliseconds. */
   endedAt: EpochMillis,
   /** Committed Session position when this goal ended; zero before any entry. */
@@ -134,6 +144,47 @@ export const goalContract = {
   id: ExtensionId.make("botanical-session-goal"),
   /** Goal commands admitted by the Session owner. */
   commands: {
+    /** Exact first delegator's controls; never an ordinary person command. */
+    controlAgent: {
+      /** The child's Session owns this goal. */
+      scope: "session",
+      /** Requested control; caller identity comes only from the host. */
+      input: Schema.Struct({
+        /** Pause, resume this delegator's own pause, or clear the goal. */
+        action: Schema.Literals(["pause", "resume", "clear"]),
+        /** Explanation retained with the control change. */
+        reason: GoalReason,
+      }),
+      /** Applied control or an explicit refusal without mutation. */
+      output: Schema.Union([
+        Schema.Struct({
+          /** The exact delegator paused this goal. */
+          result: Schema.Literal("paused"),
+          /** Current paused goal and its controller attribution. */
+          goal: Goal,
+        }),
+        Schema.Struct({
+          /** This delegator resumed its own pause. */
+          result: Schema.Literal("resumed"),
+          /** Current active goal. */
+          goal: Goal,
+        }),
+        Schema.Struct({
+          /** The exact delegator cleared the goal. */
+          result: Schema.Literal("cleared"),
+        }),
+        Schema.Struct({
+          /** No live goal exists to control. */
+          result: Schema.Literal("no_goal"),
+        }),
+        Schema.Struct({
+          /** No goal state changed. */
+          result: Schema.Literal("refused"),
+          /** Caller lacks exact authority, or does not own this pause. */
+          reason: Schema.Literals(["not_delegator", "not_paused_by_delegator"]),
+        }),
+      ]),
+    },
     /** Open or answer the human goal controls. */
     goal: {
       /** The Session owns this goal. */

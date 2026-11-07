@@ -24,9 +24,13 @@ function currentRow(goal: Goal): ClientContributionV1["panel"][number] {
   const active = goal.state === "active";
   const status = active
     ? `Pursuing goal since ${clockTime(goal.startedAt)}`
-    : "Goal paused (/goal resume)";
+    : goal.pauseCause?.kind === "delegator"
+      ? `Goal paused by ${summary(goal.pauseCause.detail ?? "delegator")} (/goal resume)`
+      : "Goal paused (/goal resume)";
   const reason =
-    !active && goal.pauseCause?.detail != null
+    !active &&
+    goal.pauseCause?.kind !== "delegator" &&
+    goal.pauseCause?.detail != null
       ? [summary(goal.pauseCause.detail)]
       : [];
   const row: ClientContributionV1["panel"][number] = {

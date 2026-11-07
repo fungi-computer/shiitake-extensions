@@ -98,6 +98,237 @@ async function expectPausedAttention(
   ]);
 }
 
+const delegator = {
+  agentId: "shiitake",
+  sessionId: "shiitake-session",
+  name: "Shiitake",
+};
+
+async function delegatedGoal(overrides: Parameters<typeof openAgent>[2] = {}) {
+  const store = sqliteOwner();
+  const host = await openAgent(
+    store.owner,
+    grantAll([goalExtension]),
+    overrides,
+    undefined,
+    {
+      fanOut: () => Effect.void,
+      postMail: () => Effect.void,
+    },
+  );
+  if (host.mail === undefined) throw new Error("Missing mail host");
+  const from = {
+    kind: "agent" as const,
+    agentId: delegator.agentId,
+    sessionId: delegator.sessionId,
+  };
+  const accepted = await Effect.runPromise(
+    host.mail.acceptMail(
+      {
+        key: "delegate-goal",
+        from,
+        to: { kind: "agent", agentId: "sol" },
+        replyTo: [from],
+        content: "Build the lane",
+        createdAt: 1,
+      },
+      {
+        author: { id: delegator.agentId, name: delegator.name, kind: "agent" },
+      },
+      undefined,
+      () => undefined,
+    ),
+  );
+  const row = (await Effect.runPromise(host.agent.listSessions())).sessions[0];
+  if (row === undefined) throw new Error("Missing child Session");
+  const session = host.session(row.sessionId);
+  const goal = session.extension(goalContract.id);
+  await goal.call("set", {
+    objective: "Build the lane",
+    expectedRevision: null,
+    requestId: "goal",
+    adoptCommandId: accepted.commandId,
+  });
+  return {
+    ...host,
+    goal,
+    session,
+    sessionId: row.sessionId,
+    view: async () => (await session.read()).extensions[goalContract.id],
+    dispose: async () => {
+      await host.close();
+      store.close();
+    },
+  };
+}
+
+it("the exact delegator pauses, resumes only its own pause, and clears with provenance", async () => {
+  const host = await delegatedGoal();
+  try {
+    expect(
+      await host.goal.call(
+        "controlAgent",
+        { action: "pause", reason: "Hold for review" },
+        delegator,
+      ),
+    ).toMatchObject({
+      result: "paused",
+      goal: {
+        state: "paused",
+        pauseCause: { kind: "delegator", detail: "Shiitake: Hold for review" },
+      },
+    });
+    expect(
+      await host.goal.call(
+        "controlAgent",
+        { action: "resume", reason: "Review done" },
+        delegator,
+      ),
+    ).toMatchObject({ result: "resumed", goal: { state: "active" } });
+    await host.goal.call("pause", {});
+    expect(
+      await host.goal.call(
+        "controlAgent",
+        { action: "resume", reason: "Cannot take a person's pause" },
+        delegator,
+      ),
+    ).toEqual({ result: "refused", reason: "not_paused_by_delegator" });
+    await host.goal.call(
+      "controlAgent",
+      { action: "pause", reason: "Cannot relabel the person's pause" },
+      delegator,
+    );
+    expect(
+      await host.goal.call(
+        "controlAgent",
+        { action: "resume", reason: "Still forbidden" },
+        delegator,
+      ),
+    ).toEqual({ result: "refused", reason: "not_paused_by_delegator" });
+    expect(
+      await host.goal.call(
+        "controlAgent",
+        { action: "clear", reason: "Superseded lane" },
+        delegator,
+      ),
+    ).toEqual({ result: "cleared" });
+    expect(await host.view()).toMatchObject({
+      value: {
+        goal: null,
+        ended: [
+          {
+            outcome: "cleared",
+            reason: "Superseded lane",
+            clearedBy: delegator.agentId,
+          },
+        ],
+      },
+    });
+    expect(
+      await host.goal.call(
+        "controlAgent",
+        { action: "clear", reason: "Retry" },
+        delegator,
+      ),
+    ).toEqual({ result: "no_goal" });
+  } finally {
+    await host.dispose();
+  }
+});
+
+it("a sibling that later sent work and another Session of the parent are not the delegator", async () => {
+  const host = await delegatedGoal();
+  try {
+    const sibling = {
+      kind: "agent" as const,
+      agentId: "sibling",
+      sessionId: "sibling-session",
+    };
+    if (host.mail === undefined) throw new Error("Missing mail");
+    await Effect.runPromise(
+      host.mail.acceptMail({
+        key: "sibling-work",
+        from: sibling,
+        to: { kind: "agent", agentId: "sol", sessionId: host.sessionId },
+        replyTo: [sibling],
+        content: "More work",
+        createdAt: 2,
+      }),
+    );
+    for (const caller of [
+      sibling,
+      { ...delegator, sessionId: "other-session" },
+    ])
+      for (const action of ["pause", "resume", "clear"])
+        expect(
+          await host.goal.call(
+            "controlAgent",
+            { action, reason: "Not mine" },
+            caller,
+          ),
+        ).toEqual({ result: "refused", reason: "not_delegator" });
+    await expect(
+      host.goal.call("controlAgent", {
+        action: "clear",
+        reason: "No authentication",
+      }),
+    ).rejects.toThrow("authenticated Agent");
+    for (const command of ["goal", "pause", "resume", "clear", "set"]) {
+      const input =
+        command === "set"
+          ? { objective: "Hijack", expectedRevision: null, requestId: "hijack" }
+          : {};
+      await expect(host.goal.call(command, input, delegator)).rejects.toThrow(
+        "person",
+      );
+    }
+  } finally {
+    await host.dispose();
+  }
+});
+
+it.each(["clear", "resume", "blocked", "complete"])(
+  "a delegator-paused child's own %s is allowed only for completion",
+  async (status) => {
+    const outcomes: string[] = [];
+    const host = await delegatedGoal({
+      tools: updateEveryExecute(
+        { status, reason: "Evidence recorded" },
+        outcomes,
+      ),
+      model: scriptedModel([
+        fauxAssistantMessage(fauxToolCall("execute", { code: "update" }), {
+          stopReason: "toolUse",
+        }),
+        fauxAssistantMessage("Done"),
+      ]),
+    });
+    try {
+      await host.goal.call(
+        "controlAgent",
+        { action: "pause", reason: "Review" },
+        delegator,
+      );
+      await host.drain();
+      expect(outcomes).toHaveLength(1);
+      if (status === "complete") {
+        expect(await host.view()).toMatchObject({
+          value: { goal: null, ended: [{ outcome: "achieved" }] },
+        });
+      } else {
+        expect(outcomes[0]).toContain("only complete");
+        expect(await host.view()).toMatchObject({
+          value: {
+            goal: { state: "paused", pauseCause: { kind: "delegator" } },
+          },
+        });
+      }
+    } finally {
+      await host.dispose();
+    }
+  },
+);
+
 it("a person's pause records its typed cause without asking for human attention", async () => {
   const host = await openGoal();
   try {
@@ -2208,61 +2439,71 @@ it("the fallback timer admits one goal turn", async () => {
   }
 });
 
-it("an open question keeps the goal waiting, not stalled", async () => {
-  const asker = defineExtension({
-    id: ExtensionId.make("test-asker"),
-    version: "1.0.0",
-  })
-    .state({ version: 1, migrations: {}, collections: {} })
-    .define({
-      attention: true,
-      commands: {
-        specs: {
-          ask: {
-            scope: "session",
-            input: Schema.Struct({}),
-            output: Schema.Struct({}),
+it.each([false, true])(
+  "an open question keeps the goal waiting, including routed=%s",
+  async (routed) => {
+    const asker = defineExtension({
+      id: ExtensionId.make("test-asker"),
+      version: "1.0.0",
+    })
+      .state({ version: 1, migrations: {}, collections: {} })
+      .define({
+        attention: true,
+        commands: {
+          specs: {
+            ask: {
+              scope: "session",
+              input: Schema.Struct({}),
+              output: Schema.Struct({}),
+            },
           },
+          handlers: (ctx) => ({
+            ask: ({ sessionId }: { sessionId: string }) =>
+              ctx.attention
+                .set(sessionId, {
+                  id: "q",
+                  kind: "question",
+                  summary: "Which branch?",
+                  since: 1,
+                  waitingOn: routed
+                    ? {
+                        agentId: "shiitake",
+                        sessionId: "parent",
+                        name: "Shiitake",
+                      }
+                    : undefined,
+                })
+                .pipe(Effect.as({})),
+          }),
         },
-        handlers: (ctx) => ({
-          ask: ({ sessionId }: { sessionId: string }) =>
-            ctx.attention
-              .set(sessionId, {
-                id: "q",
-                kind: "question",
-                summary: "Which branch?",
-                since: 1,
-              })
-              .pipe(Effect.as({})),
-        }),
-      },
-    });
-  const host = await openAgent(
-    sqliteOwner().owner,
-    grantAll([goalExtension, asker]),
-  );
-  try {
-    const session = host.session("garden");
-    await bindSessionExtension(session, goalContract).call("set", {
-      objective: "Needs an answer",
-      expectedRevision: null,
-      requestId: "ask-goal",
-    });
-    await session.extension(asker.manifest.id).call("ask", {});
-    await host.drain();
-    // Three tool-free goal turns would have stalled it; one waiting turn runs.
-    const read = await session.read();
-    expect(
-      read.messages.filter(({ value }) => value.role === "user"),
-    ).toHaveLength(1);
-    expect(read.attention.map(({ kind }) => kind).sort()).toEqual([
-      "goal-waiting",
-      "question",
-    ]);
-  } finally {
-    await host.close();
-  }
-});
+      });
+    const host = await openAgent(
+      sqliteOwner().owner,
+      grantAll([goalExtension, asker]),
+    );
+    try {
+      const session = host.session("garden");
+      await bindSessionExtension(session, goalContract).call("set", {
+        objective: "Needs an answer",
+        expectedRevision: null,
+        requestId: "ask-goal",
+      });
+      await session.extension(asker.manifest.id).call("ask", {});
+      await host.drain();
+      // Three tool-free goal turns would have stalled it; one waiting turn runs.
+      const read = await session.read();
+      expect(
+        read.messages.filter(({ value }) => value.role === "user"),
+      ).toHaveLength(1);
+      expect(read.attention.map(({ kind }) => kind).sort()).toEqual([
+        "goal-waiting",
+        "question",
+      ]);
+    } finally {
+      await host.close();
+    }
+  },
+);
 
 it("twenty settled replies admit at most one goal turn each", async () => {
   const subagents = idleChild(() => true);

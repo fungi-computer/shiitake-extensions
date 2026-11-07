@@ -114,7 +114,10 @@ export async function openAgent(
   owner: SqliteOwner,
   extensions: ExtensionRosterV0,
   overrides: Partial<
-    Pick<ShiitakeEffectOptions, "model" | "tools" | "admission">
+    Pick<
+      ShiitakeEffectOptions,
+      "model" | "tools" | "admission" | "recipientStatus" | "recipientParent"
+    >
   > = {},
   logger?: Logger.Logger<unknown, unknown>,
   /** Join a mail room, so the Agent can accept mail like a Local child. */

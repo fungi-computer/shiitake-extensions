@@ -41,6 +41,8 @@ export async function questionHost(
     codes?: readonly string[];
     /** The Agent Session that sends the asking work as delegated mail. */
     sender?: Readonly<{ agentId: string; sessionId: string; name: string }>;
+    recipientStatus?: import("@fungi.computer/shiitake/effect").ShiitakeEffectOptions["recipientStatus"];
+    recipientParent?: import("@fungi.computer/shiitake/effect").ShiitakeEffectOptions["recipientParent"];
     program?: (
       bindings: SandboxRequest["bindings"],
       code: string,
@@ -67,6 +69,9 @@ export async function questionHost(
     store.owner,
     options.extensions ?? botanicalAgentExtensions,
     {
+      recipientStatus:
+        options.recipientStatus ?? (() => Effect.succeed("unknown")),
+      recipientParent: options.recipientParent ?? (() => Effect.succeed(null)),
       model: {
         acquire: () =>
           Effect.succeed({
@@ -107,8 +112,6 @@ export async function questionHost(
               settlements.push(settlement);
             }),
           postMail: () => Effect.void,
-          drainOutbox: () => Effect.void,
-          nextWakeAt: () => Effect.succeed(undefined),
         },
   );
   return {

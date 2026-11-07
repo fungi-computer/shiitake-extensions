@@ -18,10 +18,12 @@ import type { WhistleCatalogStepV1 } from "@fungi.computer/whistle/catalog";
 import type { Answers } from "../question/contract.js";
 import {
   maximumSubagents,
+  maximumCountedSubagents,
   subagentsContract,
   type Subagent,
   type SubagentsProjection,
 } from "./contract.js";
+import { escalationLabel } from "./presentation.js";
 
 /** A footer row for an ordinary Agent created by the current Agent. */
 export type SubagentRecord = Readonly<{
@@ -45,14 +47,14 @@ export type SubagentAgent = Readonly<{
 
 /**
  * The host's read-only facts. `read` returns ordinary created Agents,
- * at most `limit`, with a count of the rest; `open` is the
+ * up to `limit` plus a count of those not read; `open` is the
  * host's existing per-operation Agent access (an `AgentControlDirectory`'s
  * `open` fits), and releasing it never stops the Agent's work.
  */
 export type SubagentSource = Readonly<{
   /** A recorded accepted child command is still pending or running. Synchronous for settlement. */
   hasLiveChildCommand: (sessionId: string) => boolean;
-  /** Read a bounded list of this conversation's created Agents. */
+  /** Enumerate children before presentation limits, within the status-read budget. */
   read: (
     sessionId: string,
     limit: number,
@@ -60,7 +62,7 @@ export type SubagentSource = Readonly<{
     Readonly<{
       /** Created Agents included in this page. */
       agents: readonly SubagentRecord[];
-      /** Additional created Agents not included in this page. */
+      /** Additional created Agents outside this bounded read. */
       more: number;
     }>
   >;
@@ -149,8 +151,6 @@ async function status(
       if (row === undefined || row.state === "unavailable")
         return { ...base, state: "unavailable" };
       const selected = { ...base, sessionId: row.sessionId };
-      if (row.state === "running" || row.state === "errored")
-        return { ...selected, state: settledState[row.state] };
       // An item waiting on an Agent is calm and leaves the inbox state alone,
       // so a finished child is read for it too. Escalated items wait on a person.
       const snapshot = await opened.agent
@@ -162,8 +162,17 @@ async function status(
           ? Schema.decodeUnknownOption(AskProjection)(slot.value)
           : Option.none();
       const openAsks = Option.isSome(asked) ? asked.value.asks : [];
+      const personal = snapshot.attention.find((item) => item.inbox !== false);
       const routed = snapshot.attention.find((item) => item.waitingOn);
-      if (routed?.waitingOn !== undefined) {
+      const selectedAttention = personal ?? routed;
+      if (selectedAttention?.escalated !== undefined)
+        Object.assign(selected, {
+          escalated: {
+            by: selectedAttention.escalated.by.name,
+            reason: selectedAttention.escalated.reason,
+          },
+        });
+      if (personal === undefined && routed?.waitingOn !== undefined) {
         const waiting: Subagent = {
           ...selected,
           state: "waiting_on_agent",
@@ -179,10 +188,14 @@ async function status(
               ask: { askId: routedAsk.askId, questions: routedAsk.questions },
             };
       }
-      const attention = snapshot.attention.find(
-        (item) => item.inbox !== false,
-      )?.summary;
-      if (row.state === "done") return { ...selected, state: "idle" };
+      const attention = personal?.summary;
+      if (
+        personal === undefined &&
+        (row.state === "running" || row.state === "errored")
+      )
+        return { ...selected, state: settledState[row.state] };
+      if (personal === undefined && row.state === "done")
+        return { ...selected, state: "idle" };
       const ask = openAsks.find((open) => open.waitingOn === undefined);
       const needing: Subagent = { ...selected, state: "needs_you" };
       const summary =
@@ -260,14 +273,76 @@ function createRoster(
     clearTimeout(entry.timer);
     entry.timer = undefined;
     try {
-      const page = await source.read(sessionId, maximumSubagents - 1);
+      const page = await source.read(sessionId, maximumCountedSubagents);
+      const all: Subagent[] = [];
+      // Bound concurrent owner reads, never truncate the counts to displayed rows.
+      for (let offset = 0; offset < page.agents.length; offset += 8) {
+        if (lifetime.signal.aborted) return;
+        all.push(
+          ...(await Promise.all(
+            page.agents
+              .slice(offset, offset + 8)
+              .map((record) => status(source, record, lifetime.signal)),
+          )),
+        );
+      }
+      const counts = {
+        working: 0,
+        waiting_on_agent: 0,
+        needs_you: 0,
+        idle: 0,
+        failed: 0,
+        unavailable: 0,
+      };
+      const waitingOn = new Map<string, number>();
+      const escalatedBy = new Map<
+        string,
+        SubagentsProjection["escalatedBy"][number]
+      >();
+      for (const child of all) {
+        counts[child.state] += 1;
+        if (child.state === "waiting_on_agent" && child.waitingOn !== undefined)
+          waitingOn.set(
+            child.waitingOn,
+            (waitingOn.get(child.waitingOn) ?? 0) + 1,
+          );
+        if (child.state === "needs_you" && child.escalated !== undefined) {
+          const { by: name, reason } = child.escalated;
+          const key = `${reason}:${name}`;
+          escalatedBy.set(key, {
+            name,
+            reason,
+            count: (escalatedBy.get(key)?.count ?? 0) + 1,
+          });
+        }
+      }
+      const grouped = (names: Map<string, number>) =>
+        [...names]
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([name, count]) => ({ name, count }));
+      const priority = {
+        needs_you: 0,
+        waiting_on_agent: 1,
+        working: 2,
+        failed: 3,
+        unavailable: 4,
+        idle: 5,
+      } satisfies Record<Subagent["state"], number>;
+      all.sort((a, b) => priority[a.state] - priority[b.state]);
       const value: Rows = {
-        agents: await Promise.all(
-          page.agents
-            .slice(0, maximumSubagents - 1)
-            .map((record) => status(source, record, lifetime.signal)),
+        agents: all.slice(0, maximumSubagents - 1),
+        more: Math.max(0, all.length - (maximumSubagents - 1)),
+        uncounted: page.more,
+        counts,
+        escalated: [...escalatedBy.values()].reduce(
+          (sum, group) => sum + group.count,
+          0,
         ),
-        more: page.more,
+        waitingOn: grouped(waitingOn),
+        escalatedBy: [...escalatedBy.values()].sort(
+          (a, b) =>
+            a.name.localeCompare(b.name) || a.reason.localeCompare(b.reason),
+        ),
       };
       const changed = JSON.stringify(value) !== JSON.stringify(entry.value);
       entry.value = value;
@@ -492,10 +567,13 @@ export function subagentsExtension(
                     ...step,
                     prompt: {
                       ...step.prompt,
-                      summary:
-                        step.prompt.summary === undefined
-                          ? `${row.name} asks`
-                          : `${row.name} asks · ${step.prompt.summary}`,
+                      summary: [
+                        `${row.name} asks`,
+                        escalationLabel(row.escalated),
+                        step.prompt.summary,
+                      ]
+                        .filter((text) => text !== undefined)
+                        .join(" · "),
                     },
                     next: {
                       ...step.next,

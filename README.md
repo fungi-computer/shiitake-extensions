@@ -1,19 +1,19 @@
-# Shiitake product extensions
+# Shiitake extensions (`@fungi.computer/shiitake-extensions`)
 
-`@fungi.computer/shiitake-extensions` supplies Fungi's questions, goals, loops,
-plans, Almanac schedules, skills and Home. Hub and Local choose the shared
-roster and explicitly grant its capabilities. Shiitake core supplies the generic
-extension API.
+The extensions behind Fungi's Agents: questions an Agent asks you, goals it
+pursues across turns, repeating loops, plans, schedules, skills, a home Computer
+and a footer of its sub-agents. Add them to any
+[Shiitake](https://github.com/fungi-computer/shiitake) host with one roster.
 
-## Set up
-
-This is a package for host and client maintainers. Use its exported subpaths
-from the configured workspace, not an invented npm install. From the repository
-root:
+## Install
 
 ```sh
-pnpm turbo:run run build --filter=@fungi.computer/shiitake-extensions
+npm install @fungi.computer/shiitake-extensions @fungi.computer/shiitake
 ```
+
+To compile against the complete public declarations, also install
+`@modelcontextprotocol/sdk@1.25.2`; the shared provider SDK imports those types
+through an optional peer. This needs no provider account.
 
 A host passes `botanicalAgentExtensions` as its Shiitake `extensions` option. It
 still supplies the SQLite owner, runtime wake, model and instruction sources and
@@ -183,46 +183,12 @@ timers. An accepted prompt is queued work, not a finished model reply. Core owns
 replay cursors and publication after commit. A stopped extension exposes its
 reason; the host can resume it without inventing a separate background loop.
 
-## API reference and examples
+## Add the host-composed extensions
 
-The [generated API reference](docs/api/README.md) follows the public
-entrypoints. Run `pnpm --dir packages/shiitake-extensions run docs:write` from
-the repository root after changing them, then
-`pnpm --dir packages/shiitake-extensions run docs` to check consistency.
-[package.json](package.json) owns these exported subpaths:
+Home, Subagents and the conversation-Agent roster are composed by the host, not
+included in `botanicalAgentExtensions`.
 
-| Entry                                          | Source                                                                                                    |
-| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `/goal`, `/goal/host`                          | [Goal contract](src/goal/contract.ts) and [definition](src/goal/host.ts).                                 |
-| `/loop`, `/loop/host`                          | [Loop contract](src/loop/contract.ts) and [definition](src/loop/host.ts).                                 |
-| `/almanac`, `/almanac/host`                    | [Schedule contract](src/almanac/contract.ts) and [definition](src/almanac/host.ts).                       |
-| `/home`, `/home/host`                          | [Home contract](src/home/contract.ts) and [definition](src/home/host.ts).                                 |
-| `/question`, `/question/host`                  | [Question contract](src/question/contract.ts) and [definition](src/question/host.ts).                     |
-| `/plan`, `/plan/host`                          | [Plan contract](src/plan/contract.ts) and [definition](src/plan/host.ts).                                 |
-| `/skills`, `/skills/source`                    | [Skills definition](src/skills/host.ts) and [host-owned source](src/skills/source.ts).                    |
-| `/subagents`, `/subagents/host`                | [Subagents contract](src/subagents/contract.ts) and [definition](src/subagents/host.ts).                  |
-| `/subagents/client`                            | [Subagents client entry](src/subagents/client.ts).                                                        |
-| `/goal/client`, `/loop/client`, `/plan/client` | Client entries for [Goal](src/goal/client.ts), [Loop](src/loop/client.ts) and [Plan](src/plan/client.ts). |
-| `/roster`                                      | [Product roster and grants](src/roster.ts).                                                               |
-| `/schedules`                                   | [Schema-only schedule pages, targets and receipts](src/schedules.ts).                                     |
-| `/schedules/client`                            | [Native schedule reads and controls](src/schedules/client.ts).                                            |
-
-[Loop tests](test/loop.test.ts) exercise scheduling and mid-run pause.
-[Almanac tests](test/almanac.test.ts) exercise admission and retry.
-[Catalog tests](test/catalog.test.ts) check the human interaction contracts.
-These fixtures use the actual extension definitions on Shiitake with fake
-models.
-
-### Schedule consumers
-
-Use `/schedules` for schedule schemas and types in an App bundle. It imports the
-retained Almanac and Loop data schemas, not their native invocation clients.
-Native host integrations use `/schedules/client` for `readAgentSchedulePage`,
-`controlAgentSchedule` and `controlAgentScheduleWithContent` on an already
-admitted Agent owner. These helpers own no admission policy, store or scheduler.
-Reading and management remain separately admitted by the host.
-
-## Home
+### Home
 
 The host creates `homeExtension({ computers })`, where `computers.read()`
 synchronously returns the current attachments as `{ name, attachmentId, port }`.
@@ -253,33 +219,7 @@ Hosts keep the control door human/operator-authorized.
 [Home tests](test/home.test.ts) exercise selection, capture, detachment, routing
 and gating on real Shiitake.
 
-## Limits and errors
-
-A roster entry is not an external-resource grant. The host still admits each
-operation and owns its current Team, Computer and credential policy. A command
-conflict requires a fresh observation; retry an uncertain request with the same
-identity. A view with no goal is not evidence that a previous goal completed.
-Closing a client view does not pause the goal, stop a loop or cancel a schedule.
-
-## Contribute and license
-
-Add regressions beside the owning extension or catalog. From the root:
-
-```sh
-pnpm --dir packages/shiitake-extensions run test
-pnpm --dir packages/shiitake-extensions run typecheck
-```
-
-MIT. See [LICENSE](LICENSE).
-
-## TypeScript consumer dependencies
-
-Install `@modelcontextprotocol/sdk@1.25.2` alongside this package when compiling
-its complete public declarations. The shared provider SDK imports those types
-through an optional peer; the packed consumer supplies it explicitly. This does
-not require a provider account or make a provider call.
-
-## Subagents
+### Subagents
 
 The host creates `subagentsExtension({ source })` and adds `subagentsGrant`
 (`projection` and `commands`: the human `/agents` command only collapses or
@@ -309,7 +249,70 @@ second old. While a row is working or waiting, they poll every five seconds
 until nobody has read the parent for thirty seconds. Like Home, the extension is
 composed by the host, not included in `botanicalAgentExtensions`.
 
-## Packed consumer readiness
+### Conversation Agents
+
+`@fungi.computer/shiitake-extensions/roster/conversation-agents` supplies the
+shared Local, Hub and Oyster conversation-Agent composition. The host supplies
+its authorized Agent directory and SQLite owner; the roster records accepted
+creates and sends for a read-only footer without granting relationships or
+authority. Storage is prepared lazily. The host remains responsible for creation
+admission, Agent access and resource lifetime.
+
+### Schedules in an App or native host
+
+Use `/schedules` for schedule schemas and types in an App bundle. It imports the
+retained Almanac and Loop data schemas, not their native invocation clients.
+Native host integrations use `/schedules/client` for `readAgentSchedulePage`,
+`controlAgentSchedule` and `controlAgentScheduleWithContent` on an already
+admitted Agent owner. These helpers own no admission policy, store or scheduler.
+Reading and management remain separately admitted by the host.
+
+## API reference and examples
+
+The [generated API reference](docs/api/README.md) follows the public
+entrypoints. Run `pnpm --dir packages/shiitake-extensions run docs:write` from
+the repository root after changing them, then
+`pnpm --dir packages/shiitake-extensions run docs` to check consistency.
+[package.json](package.json) owns these exported subpaths:
+
+| Entry                                          | Source                                                                                                    |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `/goal`, `/goal/host`                          | [Goal contract](src/goal/contract.ts) and [definition](src/goal/host.ts).                                 |
+| `/loop`, `/loop/host`                          | [Loop contract](src/loop/contract.ts) and [definition](src/loop/host.ts).                                 |
+| `/almanac`, `/almanac/host`                    | [Schedule contract](src/almanac/contract.ts) and [definition](src/almanac/host.ts).                       |
+| `/home`, `/home/host`                          | [Home contract](src/home/contract.ts) and [definition](src/home/host.ts).                                 |
+| `/question`, `/question/host`                  | [Question contract](src/question/contract.ts) and [definition](src/question/host.ts).                     |
+| `/plan`, `/plan/host`                          | [Plan contract](src/plan/contract.ts) and [definition](src/plan/host.ts).                                 |
+| `/skills`, `/skills/source`                    | [Skills definition](src/skills/host.ts) and [host-owned source](src/skills/source.ts).                    |
+| `/subagents`, `/subagents/host`                | [Subagents contract](src/subagents/contract.ts) and [definition](src/subagents/host.ts).                  |
+| `/subagents/client`                            | [Subagents client entry](src/subagents/client.ts).                                                        |
+| `/goal/client`, `/loop/client`, `/plan/client` | Client entries for [Goal](src/goal/client.ts), [Loop](src/loop/client.ts) and [Plan](src/plan/client.ts). |
+| `/roster`                                      | [Product roster and grants](src/roster.ts).                                                               |
+| `/schedules`                                   | [Schema-only schedule pages, targets and receipts](src/schedules.ts).                                     |
+| `/schedules/client`                            | [Native schedule reads and controls](src/schedules/client.ts).                                            |
+
+[Loop tests](test/loop.test.ts) exercise scheduling and mid-run pause.
+[Almanac tests](test/almanac.test.ts) exercise admission and retry.
+[Catalog tests](test/catalog.test.ts) check the human interaction contracts.
+These fixtures use the actual extension definitions on Shiitake with fake
+models.
+
+## Limits and errors
+
+A roster entry is not an external-resource grant. The host still admits each
+operation and owns its current Team, Computer and credential policy. A command
+conflict requires a fresh observation; retry an uncertain request with the same
+identity. A view with no goal is not evidence that a previous goal completed.
+Closing a client view does not pause the goal, stop a loop or cancel a schedule.
+
+## Contribute and license
+
+Add regressions beside the owning extension or catalog. From the root:
+
+```sh
+pnpm --dir packages/shiitake-extensions run test
+pnpm --dir packages/shiitake-extensions run typecheck
+```
 
 Run `pnpm run build`, `pnpm run pack` and `pnpm run stranger` in this package.
 The maintained stranger proof installs only package tarballs into a fresh npm
@@ -318,14 +321,4 @@ compiles every JavaScript entrypoint with strict NodeNext and no library-check
 skip. This qualification does not publish npm releases or push a repository
 split.
 
-See [LICENSE](LICENSE) for the license and the package manifest for its public
-repository destination.
-
-## Conversation Agent composition
-
-`@fungi.computer/shiitake-extensions/roster/conversation-agents` supplies the
-shared Local, Hub and Oyster conversation-Agent composition. The host supplies
-its authorized Agent directory and SQLite owner; the roster records accepted
-creates and sends for a read-only footer without granting relationships or
-authority. Storage is prepared lazily. The host remains responsible for creation
-admission, Agent access and resource lifetime.
+MIT. See [LICENSE](LICENSE).

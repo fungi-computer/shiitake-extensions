@@ -911,7 +911,8 @@ it("expires fixed interval loops without admitting a late occurrence", async () 
       value: {
         loop: {
           state: "finished",
-          reason: "fixed interval expired after 7 days",
+          reason:
+            "fixed interval expired after 7 days; start a new loop to continue",
         },
       },
     });

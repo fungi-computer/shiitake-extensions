@@ -1,5 +1,16 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.6.14
+
+### Patch Changes
+
+- Changes since 0.6.13:
+
+  - fix(loop): tell the model and the person a fixed cadence ends after 7 days
+
+- Updated dependencies
+  - @fungi.computer/shiitake@0.14.0
+
 ## 0.6.13
 
 ### Patch Changes

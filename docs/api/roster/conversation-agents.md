@@ -103,7 +103,10 @@ child.
 ### oysterAgentExtensions()
 
 ```ts
-function oysterAgentExtensions(source): Readonly<{
+function oysterAgentExtensions(
+  source,
+  skills?,
+): Readonly<{
   roster: readonly RosteredExtensionV0[];
   grants: readonly Readonly<{
     id: string & Brand<"ExtensionId">;
@@ -113,13 +116,15 @@ function oysterAgentExtensions(source): Readonly<{
 }>;
 ```
 
-Both hosts compose the ordinary roster and its read-only created-Agent footer.
+Both hosts compose the ordinary roster and its read-only created-Agent footer. A
+host that can read skills where its Agent works adds them.
 
 #### Parameters
 
-| Parameter | Type                                                    |
-| --------- | ------------------------------------------------------- |
-| `source`  | [`SubagentSource`](../subagents/host.md#subagentsource) |
+| Parameter | Type                                                                                               |
+| --------- | -------------------------------------------------------------------------------------------------- |
+| `source`  | [`SubagentSource`](../subagents/host.md#subagentsource)                                            |
+| `skills?` | `Readonly`\<\{ `source`: [`SkillSource`](../skills/source.md#skillsource); `empty`: `string`; \}\> |
 
 #### Returns
 

@@ -233,7 +233,19 @@ function reportDiagnostics(catalog: SkillCatalog) {
 /** Skills use only the generic prompt and run-tools doors; the host owns files. */
 export function skillsExtension({
   source,
-}: Readonly<{ source: SkillSource }>): RosteredExtensionV0 {
+  empty,
+  scanOnStart = true,
+}: Readonly<{
+  source: SkillSource;
+  /** What to say when no skills are installed, where the host keeps them. */
+  empty?: string | undefined;
+  /**
+   * Scan when the run activates. A host whose source acquires a Computer
+   * leaves this off so addressing a Session acquires nothing; the first
+   * model request then takes the scan.
+   */
+  scanOnStart?: boolean | undefined;
+}>): RosteredExtensionV0 {
   // Commands run inside a synchronous core transaction, so /skills shows the
   // latest discovery: taken at activation and again before each model request.
   let latest: SkillCatalog | undefined;
@@ -245,7 +257,7 @@ export function skillsExtension({
     ),
   );
   return defineExtension({ id, version: "1.1.0" })
-    .config(config)
+    .config(empty === undefined ? config : { ...config, empty })
     .define({
       catalog: commandCatalog([
         {
@@ -276,15 +288,17 @@ export function skillsExtension({
       },
       hooks: {
         start: () =>
-          Effect.tryPromise((signal) => source.catalog(signal)).pipe(
-            Effect.tap((found) =>
-              Effect.sync(() => {
-                latest = found;
-              }),
-            ),
-            // A failed first scan leaves /skills waiting for the next run's scan.
-            Effect.ignore,
-          ),
+          scanOnStart
+            ? Effect.tryPromise((signal) => source.catalog(signal)).pipe(
+                Effect.tap((found) =>
+                  Effect.sync(() => {
+                    latest = found;
+                  }),
+                ),
+                // A failed first scan leaves /skills waiting for the next run's scan.
+                Effect.ignore,
+              )
+            : Effect.void,
       },
       prompt: () =>
         Effect.gen(function* () {

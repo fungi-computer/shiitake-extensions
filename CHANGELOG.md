@@ -1,5 +1,22 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.8.0
+
+### Minor Changes
+
+- Changes since 0.7.0:
+
+  - fix(oyster): scan Computer skills on the first model request, not at Session
+    start
+  - feat(oyster): let an Agent use skills left on its Computer
+
+### Patch Changes
+
+- Updated dependencies
+  - @fungi.computer/shiitake@0.15.0
+  - @fungi.computer/mycelium@0.3.10
+  - @fungi.computer/knapsack@0.4.11
+
 ## 0.7.0
 
 ### Minor Changes

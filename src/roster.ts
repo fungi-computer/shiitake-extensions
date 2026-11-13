@@ -113,15 +113,26 @@ export function botanicalExtensionsWithSubagents(
   };
 }
 
+/** Add read-only skill discovery over `source` to any roster. */
+export function botanicalExtensionsWithSkillSource(
+  base: ExtensionRosterV0,
+  source: SkillSource,
+  options: Readonly<{ empty?: string; scanOnStart?: boolean }> = {},
+): ExtensionRosterV0 {
+  return {
+    roster: [...base.roster, skillsExtension({ source, ...options })],
+    grants: [...base.grants, skillsGrant],
+  };
+}
+
 /** A host with a SkillSource grants read-only skill discovery for its own runs. */
 export function botanicalExtensionsWithSkills(
   source: SkillSource,
 ): ExtensionRosterV0 {
-  const local = botanicalExtensionsWithSenderRouting();
-  return {
-    roster: [...local.roster, skillsExtension({ source })],
-    grants: [...local.grants, skillsGrant],
-  };
+  return botanicalExtensionsWithSkillSource(
+    botanicalExtensionsWithSenderRouting(),
+    source,
+  );
 }
 
 /** Route Asks to the Agent that sent the work, only in a host that owns the Local answer door. */

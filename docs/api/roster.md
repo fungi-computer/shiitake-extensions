@@ -43,6 +43,32 @@ Compose the goal and footer over one source; an absent goal is a wiring error.
 
 ---
 
+### botanicalExtensionsWithSkillSource()
+
+```ts
+function botanicalExtensionsWithSkillSource(
+  base,
+  source,
+  options?,
+): ExtensionRosterV0;
+```
+
+Add read-only skill discovery over `source` to any roster.
+
+#### Parameters
+
+| Parameter | Type                                                               |
+| --------- | ------------------------------------------------------------------ |
+| `base`    | `ExtensionRosterV0`                                                |
+| `source`  | [`SkillSource`](skills/source.md#skillsource)                      |
+| `options` | `Readonly`\<\{ `empty?`: `string`; `scanOnStart?`: `boolean`; \}\> |
+
+#### Returns
+
+`ExtensionRosterV0`
+
+---
+
 ### botanicalExtensionsWithSkills()
 
 ```ts

@@ -14,8 +14,10 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import {
   botanicalAgentExtensions,
+  botanicalExtensionsWithSkillSource,
   botanicalExtensionsWithSubagents,
 } from "../roster.js";
+import type { SkillSource } from "../skills/source.js";
 import { goalContract } from "../goal/contract.js";
 import type { SubagentSource } from "../subagents/host.js";
 
@@ -382,7 +384,22 @@ export function createConversationAgents(storage: WatchdogSqliteOwner) {
   };
 }
 
-/** Both hosts compose the ordinary roster and its read-only created-Agent footer. */
-export function oysterAgentExtensions(source: SubagentSource) {
-  return botanicalExtensionsWithSubagents(botanicalAgentExtensions, source);
+/**
+ * Both hosts compose the ordinary roster and its read-only created-Agent
+ * footer. A host that can read skills where its Agent works adds them.
+ */
+export function oysterAgentExtensions(
+  source: SubagentSource,
+  skills?: Readonly<{ source: SkillSource; empty: string }>,
+) {
+  return botanicalExtensionsWithSubagents(
+    skills === undefined
+      ? botanicalAgentExtensions
+      : botanicalExtensionsWithSkillSource(
+          botanicalAgentExtensions,
+          skills.source,
+          { empty: skills.empty, scanOnStart: false },
+        ),
+    source,
+  );
 }

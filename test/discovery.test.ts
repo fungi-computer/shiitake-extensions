@@ -62,7 +62,7 @@ it("finds and describes every Ask, goal, loop and plan operation in a normal run
                   cursor === null ? { limit: 3 } : { limit: 3, cursor },
                 ),
               );
-            expect(page.total).toBe(14);
+            expect(page.total).toBe(17);
             listed.push(...page.results.map((row) => row.path));
             cursor = page.nextCursor;
           } while (cursor !== null);
@@ -158,7 +158,14 @@ it("finds and describes every Ask, goal, loop and plan operation in a normal run
         "loop.schedule_next",
       ]),
     );
-    expect(pathsByQuery.get("schedule")).toContain("loop.schedule_next");
+    expect(pathsByQuery.get("schedule")).toEqual(
+      expect.arrayContaining([
+        "loop.schedule_next",
+        "schedule.create",
+        "schedule.list",
+        "schedule.cancel",
+      ]),
+    );
     expect(pathsByQuery.get("schedule_next")).toContain("loop.schedule_next");
     expect(pathsByQuery.get("plan")).toContain("plan.update_plan");
     expect(pathsByQuery.get("complete")).toContain("goal.update_goal");
@@ -178,8 +185,11 @@ it("finds and describes every Ask, goal, loop and plan operation in a normal run
       "plan.update_plan",
       "question.ask",
       "question.withdraw",
+      "schedule.cancel",
+      "schedule.create",
+      "schedule.list",
     ]);
-    expect(new Set(listed).size).toBe(14);
+    expect(new Set(listed).size).toBe(17);
     const questionSchema = {
       properties: {
         questions: {
@@ -213,6 +223,9 @@ it("finds and describes every Ask, goal, loop and plan operation in a normal run
     });
     expect(inputSchemas.get("loop.schedule_next")).toMatchObject({
       properties: { reason: { maxLength: 4000 } },
+    });
+    expect(inputSchemas.get("schedule.create")).toMatchObject({
+      properties: { prompt: { maxLength: 4000 } },
     });
     expect(inputSchemas.get("plan.update_plan")).toMatchObject({
       properties: {

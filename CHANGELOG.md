@@ -1,5 +1,20 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.7.0
+
+### Minor Changes
+
+- Changes since 0.6.15:
+
+  - feat(shiitake-extensions): give Agents schedule.create, list and cancel on
+    Almanac
+
+### Patch Changes
+
+- @fungi.computer/shiitake@0.14.2
+  - @fungi.computer/mycelium@0.3.9
+  - @fungi.computer/knapsack@0.4.10
+
 ## 0.6.15
 
 ### Patch Changes

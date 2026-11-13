@@ -75,7 +75,14 @@ export const botanicalAgentExtensions: ExtensionRosterV0 = Object.freeze({
     },
     {
       id: almanacContract.id,
-      capabilities: ["state", "send", "timers", "commands"],
+      capabilities: [
+        "state",
+        "send",
+        "timers",
+        "commands",
+        "run_tools",
+        "prompt",
+      ],
     },
     {
       id: planContract.id,

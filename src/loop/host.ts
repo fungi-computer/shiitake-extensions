@@ -39,7 +39,7 @@ import { loopMenuPrompt, stopConfirmation } from "./prompts.js";
 
 /** The rules the model follows; the describe page and a live loop's prompt share them. */
 const rules =
-  "You may start loops yourself; one live loop per Session. Failed loop ticks retry with backoff; loop.get shows consecutiveFailures, lastError, and nextDueAt. schedule_next is allowed only in the active self-paced loop's own run, clamped to 60–3600 seconds. Omitting it ends that loop. stop works in any Session run. Human pause/resume/stop and Esc remain user controls. A fixed every-N cadence ends after 7 days; tell the person when you start one, and start a new loop to continue.";
+  "You may start loops yourself; one live loop per Session. Failed loop ticks retry with backoff; loop.get shows consecutiveFailures, lastError, and nextDueAt. schedule_next is allowed only in the active self-paced loop's own run, clamped to 60–3600 seconds. Omitting it ends that loop. stop works in any Session run. Human pause/resume/stop and Esc remain user controls. A fixed every-N cadence ends after 7 days; for a daily or weekly cadence, or anything longer, use schedule.create (forage.describe({path:'schedule'})) instead, and otherwise tell the person when you start one.";
 
 /** Hashed prose and policy: every constant loop reads comes from here. */
 const config = {
@@ -499,7 +499,7 @@ function loopModule(
       start: Mycelium.operation({
         replay: "unsafe",
         description:
-          "Start a Session loop, including autonomously. One live loop per Session; the first prompt runs after the current run. A fixed every-N cadence ends after 7 days.",
+          "Start a Session loop, including autonomously. One live loop per Session; the first prompt runs after the current run. A fixed every-N cadence ends after 7 days; use schedule.create for longer ones.",
         input: z.strictObject({
           prompt: z
             .string()

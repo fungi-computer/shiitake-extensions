@@ -12,6 +12,10 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { ask, catalog, done } from "../internal/catalog.js";
 import { Home, homeContract } from "./contract.js";
+import {
+  instructionSectionName,
+  loadHomeInstructions,
+} from "./instructions.js";
 import { homeFilesRouting } from "./routing.js";
 
 /** Already-scoped authority supplied by the host, never constructed by Home. */
@@ -33,11 +37,24 @@ export const homeGrant: ExtensionGrantV0 = {
 const config = {
   promptLimit: 4_000,
   guide:
-    "Home supplies read, list, glob and grep over your default Computer. Bare paths and computer://home/ use Home; computer://<name>/ uses that captured attachment. apply_patch, when offered, also works on Home. Only a person changes Home with /home <name>; ask them when no Home is available.",
+    "Home supplies read, list, glob and grep over your default Computer. Bare paths and computer://home/ use Home; computer://<name>/ uses that captured attachment. apply_patch, when offered, also works on Home. Home's AGENTS.md and SYSTEM.md are loaded into your prompt each run. Only a person changes Home with /home <name>; ask them when no Home is available.",
 };
 const collections = {
   choice: defineCollection(Home, { key: () => "default" }),
 };
+
+/**
+ * The Home choice a run uses: the recorded one, otherwise the only attachment.
+ * Hosts that answer "which Home" outside a run apply this same rule.
+ */
+export function resolveHome(
+  recorded: Home | null,
+  computers: readonly Readonly<{ attachmentId: string }>[],
+): Home | null {
+  if (recorded !== null) return recorded;
+  const sole = computers.length === 1 ? computers[0] : undefined;
+  return sole === undefined ? null : { attachmentId: sole.attachmentId };
+}
 
 /** Agent-scope choice with per-run tools and prompt over one captured table. */
 export function homeExtension(options: {
@@ -51,6 +68,7 @@ export function homeExtension(options: {
   // Core retains one RunIdentity for Files and every prompt request. Weak keys
   // release the captured prose with the run, including failure and cancellation.
   const prompts = new WeakMap<RunIdentityV0, string>();
+  const instructions = new WeakMap<RunIdentityV0, readonly string[]>();
   return defineExtension({ id: homeContract.id, version: "1.0.0" })
     .config(config)
     .state({ version: 1, migrations: {}, collections })
@@ -85,12 +103,10 @@ export function homeExtension(options: {
         const computers = [...options.computers.read(run)];
         const choice = ctx.state.update((state) => {
           const recorded = Option.getOrNull(state.choice.get("default"));
-          if (recorded !== null) return recorded;
-          const sole = computers.length === 1 ? computers[0] : undefined;
-          if (sole === undefined) return null;
-          const adopted = { attachmentId: sole.attachmentId };
-          state.choice.put(adopted);
-          return adopted;
+          const resolved = resolveHome(recorded, computers);
+          if (recorded === null && resolved !== null)
+            state.choice.put(resolved);
+          return resolved;
         });
         const selected = computers.find(
           (computer) => computer.attachmentId === choice?.attachmentId,
@@ -107,21 +123,37 @@ export function homeExtension(options: {
         const prompt = `${ctx.config.guide}\n${status}\nCaptured mounts: ${mounts || "none"}.`;
         prompts.set(run, prompt.slice(0, ctx.config.promptLimit));
         if (selected === undefined) return null;
-        return Knapsack.files({
+        const tools = Knapsack.files({
           port: homeFilesRouting(
             new Map(computers.map(({ name, port }) => [name, port])),
             selected.port,
           ),
         }).tools;
+        // Home's files are read once for this run, after the state transaction.
+        return loadHomeInstructions({
+          port: selected.port,
+          executionId: `home-instructions/${run.workId}`,
+          signal: new AbortController().signal,
+        }).then((text) => {
+          if (text !== null) instructions.set(run, text);
+          return tools;
+        });
       },
-      prompt: (_ctx, run) => [
-        {
-          name: "home",
-          text:
-            prompts.get(run) ??
-            "Home file tools were not captured. Ask the person to check Home's Files grant.",
-        },
-      ],
+      prompt: (_ctx, run) => {
+        const pieces = instructions.get(run) ?? [];
+        return [
+          {
+            name: "home",
+            text:
+              prompts.get(run) ??
+              "Home file tools were not captured. Ask the person to check Home's Files grant.",
+          },
+          ...pieces.map((text, index) => ({
+            name: instructionSectionName(index),
+            text,
+          })),
+        ];
+      },
       commands: {
         specs: homeContract.commands,
         handlers: (ctx) => ({

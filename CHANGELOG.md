@@ -1,5 +1,22 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.9.0
+
+### Minor Changes
+
+- Changes since 0.8.0:
+
+  - feat(agents): an Agent's instructions are AGENTS.md on its Home Computer
+  - fix(home): keep a failing instruction read from stopping the run
+  - feat(home): load AGENTS.md and SYSTEM.md from Home
+
+### Patch Changes
+
+- Updated dependencies
+  - @fungi.computer/shiitake@0.16.0
+  - @fungi.computer/mycelium@0.3.11
+  - @fungi.computer/knapsack@0.4.12
+
 ## 0.8.0
 
 ### Minor Changes

@@ -34,6 +34,47 @@ Hosts admit Home explicitly; no other extension receives the Files slot.
 
 ## Functions
 
+### resolveHome()
+
+```ts
+function resolveHome(
+  recorded,
+  computers,
+): {
+  attachmentId: string | null;
+} | null;
+```
+
+The Home choice a run uses: the recorded one, otherwise the only attachment.
+Hosts that answer "which Home" outside a run apply this same rule.
+
+#### Parameters
+
+| Parameter   | Type                                                     |
+| ----------- | -------------------------------------------------------- |
+| `recorded`  | \| \{ `attachmentId`: `string` \| `null`; \} \| `null`   |
+| `computers` | readonly `Readonly`\<\{ `attachmentId`: `string`; \}\>[] |
+
+#### Returns
+
+##### Type Literal
+
+```ts
+{
+  attachmentId: string | null;
+}
+```
+
+| Name           | Type               | Description                                                   |
+| -------------- | ------------------ | ------------------------------------------------------------- |
+| `attachmentId` | `string` \| `null` | Chosen Computer attachment, or null when no Home is selected. |
+
+---
+
+`null`
+
+---
+
 ### homeExtension()
 
 ```ts

@@ -12,6 +12,11 @@ export const Home = Schema.Struct({
   /** Chosen Computer attachment, or null when no Home is selected. */
   attachmentId: Schema.NullOr(attachmentId),
 });
+/**
+ * Bytes of AGENTS.md and SYSTEM.md Home loads into one run, and so the most an
+ * owner may save. Local enforced the same bound for its root AGENTS.md.
+ */
+export const homeInstructionsLimit = 32_000;
 /** Persisted Home selection for one Agent. */
 export type Home = Schema.Schema.Type<typeof Home>;
 

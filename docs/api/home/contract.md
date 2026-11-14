@@ -32,6 +32,17 @@ The Agent's recorded choice survives the chosen attachment being detached.
 
 ---
 
+### homeInstructionsLimit
+
+```ts
+const homeInstructionsLimit: 32000 = 32_000;
+```
+
+Bytes of AGENTS.md and SYSTEM.md Home loads into one run, and so the most an
+owner may save. Local enforced the same bound for its root AGENTS.md.
+
+---
+
 ### homeContract
 
 ```ts

@@ -18,7 +18,20 @@ import {
 import { homeFilesRouting } from "../src/home/routing.js";
 import { openAgent, sqliteOwner } from "./fixtures/host.js";
 
-function computer(name: string, calls: string[], patch = false): HomeComputer {
+const instructionPath = (path: string) =>
+  path === "AGENTS.md" || path === "SYSTEM.md";
+
+/** A Files host's absent path, as the local and Computer hosts report it. */
+function absentPath(path: string): Error {
+  return Object.assign(new Error(`ENOENT: ${path}`), { code: "ENOENT" });
+}
+
+function computer(
+  name: string,
+  calls: string[],
+  patch = false,
+  files: Readonly<Record<string, string>> = {},
+): HomeComputer {
   function paths(
     operation: "list" | "glob",
     path: string,
@@ -32,6 +45,19 @@ function computer(name: string, calls: string[], patch = false): HomeComputer {
   }
   const port: FilesPort = {
     read: (input) => {
+      if (instructionPath(input.path)) {
+        const content = files[input.path];
+        if (content === undefined)
+          return Promise.reject(absentPath(input.path));
+        return Promise.resolve({
+          path: input.path,
+          content,
+          offset: 0,
+          nextOffset: null,
+          truncated: false,
+          file: { computerId: `cmp_${name}`, path: `/${input.path}` },
+        });
+      }
       calls.push(`${name}:read:${input.path}`);
       return Promise.resolve({
         path: input.path,
@@ -403,7 +429,9 @@ it("keeps the chosen attachment in Agent state across a runtime reopen", async (
     await test.host.close();
     reopened = await openAgent(test.store.owner, {
       roster: [
-        homeExtension({ computers: { read: () => [computer("a", [])] } }),
+        homeExtension({
+          computers: { read: () => [computer("a", [])] },
+        }),
       ],
       grants: [homeGrant],
     });
@@ -580,5 +608,119 @@ it("round-trips root-relative URI results through the same port", async () => {
   for (const path of found.results.map((result) => result.path)) {
     await files.read({ path, offset: 0, limit: 20 }, context);
     expect(calls.at(-1)).toBe("local:read:src/x y");
+  }
+});
+
+const marker = "[extension:botanical-home.instructions]";
+
+it("puts Home's AGENTS.md and SYSTEM.md after the host text in their own section", async () => {
+  const test = await fixture([
+    computer("a", [], false, {
+      "AGENTS.md": "\uFEFFAlways answer in haiku.\n",
+      "SYSTEM.md": "You are Mossy.",
+    }),
+  ]);
+  try {
+    await test.run();
+    const prompt = test.prompts[0] ?? "";
+    const home = prompt.indexOf("[extension:botanical-home.home]");
+    expect(home).toBeGreaterThan(0);
+    expect(prompt.indexOf(marker)).toBeGreaterThan(home);
+    const section = prompt.slice(prompt.indexOf(marker));
+    expect(section).toContain("They never grant tools, approvals or access.");
+    expect(section).toContain("## AGENTS.md\nAlways answer in haiku.");
+    expect(section).toContain("## SYSTEM.md\nYou are Mossy.");
+    expect(prompt.slice(0, home)).not.toContain("haiku");
+  } finally {
+    await test.close();
+  }
+});
+
+it("adds no section when Home has no instruction files", async () => {
+  const test = await fixture([computer("a", [])]);
+  try {
+    await test.run();
+    expect(test.prompts[0]).not.toContain(marker);
+  } finally {
+    await test.close();
+  }
+});
+
+it("names an over-limit file instead of truncating it, and the run continues", async () => {
+  const test = await fixture([
+    computer("a", [], false, {
+      "AGENTS.md": "x".repeat(32_001),
+      "SYSTEM.md": "short voice",
+    }),
+  ]);
+  try {
+    await test.run();
+    const section = (test.prompts[0] ?? "").slice(
+      (test.prompts[0] ?? "").indexOf(marker),
+    );
+    expect(section).toContain(
+      "AGENTS.md is 32001 bytes; the limit is 32000 for Home's instruction files; ask your owner to shorten it",
+    );
+    expect(section).toContain("## SYSTEM.md\nshort voice");
+    expect(section).not.toContain("xxxxxxxx");
+  } finally {
+    await test.close();
+  }
+});
+
+it("adds no section when no Computer is captured for the session", async () => {
+  const test = await fixture([]);
+  try {
+    await test.run();
+    expect(test.prompts[0]).toContain("No Home selected");
+    expect(test.prompts[0]).not.toContain(marker);
+  } finally {
+    await test.close();
+  }
+});
+
+it("keeps Home's instruction section inside the extension prompt headroom", async () => {
+  const test = await fixture([
+    computer("a", [], false, {
+      "AGENTS.md": "a".repeat(20_000),
+      "SYSTEM.md": "s".repeat(11_000),
+    }),
+  ]);
+  try {
+    await test.run();
+    const prompt = test.prompts[0] ?? "";
+    const extensions = prompt.slice(prompt.indexOf("[extension:"));
+    // Shiitake fails a run whose extension sections exceed 65,536 bytes.
+    expect(new TextEncoder().encode(extensions).byteLength).toBeLessThan(
+      65_536,
+    );
+    expect(extensions).toContain("[extension:botanical-home.instructions-2]");
+  } finally {
+    await test.close();
+  }
+});
+
+it("names an unreadable file in the section and still runs the Agent", async () => {
+  const unreadable = computer("a", []);
+  const test = await fixture([
+    {
+      ...unreadable,
+      port: {
+        ...unreadable.port,
+        read: (input, context) =>
+          instructionPath(input.path)
+            ? Promise.reject(new Error("Computer is suspended"))
+            : unreadable.port.read(input, context),
+      },
+    },
+  ]);
+  try {
+    await test.run();
+    const prompt = test.prompts[0] ?? "";
+    expect(prompt).toContain("AGENTS.md could not be read from Home");
+    // The cause is not copied into the prompt.
+    expect(prompt).not.toContain("suspended");
+  } finally {
+    await test.close();
   }
 });

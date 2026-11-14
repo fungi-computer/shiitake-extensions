@@ -97,19 +97,21 @@ that paused on its own; a goal a person or delegator paused accepts only
 completion from the child model. The exact Session recorded as first delegator
 may pause or clear the child's goal with `agents.goal`, retaining the clear's
 reason and `clearedBy`; it may resume only a pause it imposed. Siblings and
-other Sessions, including those that later sent work, are refused. Person
-controls remain available to the owner and reject authenticated Agent callers.
-An open decision waiting on an Agent also stops goal continuation. When a
-tool-less goal turn ends while a recorded sub-agent command is live, the goal
-raises `goal-waiting` attention and rechecks on a timer instead of counting a
-stall; it continues once the child settles or replies. Only a live or paused
-goal asks before a replacement, which uses the observed revision to avoid
-replacing a newer goal; the replaced goal is recorded as cleared. When a runtime
-restart (a Hub deploy or eviction, a Local service restart) interrupts a goal
-turn, the turn resumes and the goal stays live. A live goal pauses when any turn
-of its Session fails, cannot resume or is stopped by a person (Esc), including
-the person's own messages ("The last turn failed"). A missing extension origin
-does not establish a human sender; mail and host admissions can also lack one.
+other Sessions, including those that later sent work, are refused. The same
+delegator reads which of its delegated Sessions are working, waiting or stopped
+with the goal still open with `agents.status`. Person controls remain available
+to the owner and reject authenticated Agent callers. An open decision waiting on
+an Agent also stops goal continuation. When a tool-less goal turn ends while a
+recorded sub-agent command is live, the goal raises `goal-waiting` attention and
+rechecks on a timer instead of counting a stall; it continues once the child
+settles or replies. Only a live or paused goal asks before a replacement, which
+uses the observed revision to avoid replacing a newer goal; the replaced goal is
+recorded as cleared. When a runtime restart (a Hub deploy or eviction, a Local
+service restart) interrupts a goal turn, the turn resumes and the goal stays
+live. A live goal pauses when any turn of its Session fails, cannot resume or is
+stopped by a person (Esc), including the person's own messages ("The last turn
+failed"). A missing extension origin does not establish a human sender; mail and
+host admissions can also lack one.
 
 Goal's shared wire and durable row use `pauseCause: { kind, detail }` while
 paused and `null` while active. The closed kinds are `person`, `blocked`,

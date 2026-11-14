@@ -1,5 +1,19 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.10.0
+
+### Minor Changes
+
+- Changes since 0.9.4:
+
+  - feat(shiitake): agents.status lists which directed Agents stopped with work
+    assigned
+
+### Patch Changes
+
+- Updated dependencies
+  - @fungi.computer/shiitake@0.18.0
+
 ## 0.9.4
 
 ### Patch Changes

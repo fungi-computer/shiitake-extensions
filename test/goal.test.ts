@@ -2618,3 +2618,8 @@ it("a goal that adopts already-settled work starts its first goal turn, once", a
     await host.dispose();
   }
 });
+
+it("keeps the extension id agents.status reads the goal slot by", () => {
+  // packages/shiitake/src/agent-control.ts reads this slot for a director.
+  expect(goalContract.id).toBe("botanical-session-goal");
+});

@@ -20,11 +20,14 @@ type SkillOrigin =
   | Readonly<{
       kind: "extension";
       extensionId: string;
+    }>
+  | Readonly<{
+      kind: "platform";
     }>;
 ```
 
-Where a skill folder came from: the work itself, the person, or an installed
-extension.
+Where a skill folder came from: the work, the person, an installed extension, or
+the platform.
 
 ---
 
@@ -80,16 +83,41 @@ Discovered skill descriptions and diagnostics from the same scan.
 
 ---
 
+### SkillCatalogRequest
+
+```ts
+type SkillCatalogRequest = Readonly<{
+  sessionId: string;
+  signal: AbortSignal;
+}>;
+```
+
+The run asking for discovery: a host may show different Sessions different
+skills.
+
+---
+
+### SkillReadRequest
+
+```ts
+type SkillReadRequest = Readonly<{
+  sessionId: string;
+  name: string;
+  file: string | undefined;
+  signal: AbortSignal;
+}>;
+```
+
+One skill file requested by a run.
+
+---
+
 ### SkillSource
 
 ```ts
 type SkillSource = Readonly<{
-  catalog: (signal) => Promise<SkillCatalog>;
-  read: (
-    name,
-    file,
-    signal,
-  ) => Promise<
+  catalog: (request) => Promise<SkillCatalog>;
+  read: (request) => Promise<
     Readonly<{
       name: string;
       file: string;

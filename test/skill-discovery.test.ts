@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   admitSkill,
+  describeSkillOrigin,
   newSkillAdmission,
   parseSkill,
   skillCatalogOf,
@@ -88,6 +89,16 @@ describe("the rules every host applies to a SKILL.md", () => {
       admitSkill(full, found(`skill-${String(index)}`));
     expect(skillCatalogOf(full).skills).toHaveLength(64);
     expect(full.diagnostics.at(-1)?.reason).toBe("bound");
+  });
+});
+
+describe("naming where a skill came from", () => {
+  it("names the platform origin beside the other kinds", () => {
+    expect(describeSkillOrigin({ kind: "platform" })).toBe("platform");
+    expect(describeSkillOrigin({ kind: "project" })).toBe("project");
+    expect(
+      describeSkillOrigin({ kind: "extension", extensionId: "acme" }),
+    ).toBe("extension acme");
   });
 });
 

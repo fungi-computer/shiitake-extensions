@@ -1,5 +1,13 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.11.0
+
+### Minor Changes
+
+- Changes since 0.10.2:
+
+  - feat(skills): pass the session id into the skill source
+
 ## 0.10.2
 
 ### Patch Changes

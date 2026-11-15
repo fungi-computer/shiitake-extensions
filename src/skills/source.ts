@@ -1,4 +1,4 @@
-/** Where a skill folder came from: the work itself, the person, or an installed extension. */
+/** Where a skill folder came from: the work, the person, an installed extension, or the platform. */
 export type SkillOrigin =
   | Readonly<{
       /** Project-local or personal skill discovery root. */
@@ -9,6 +9,10 @@ export type SkillOrigin =
       kind: "extension";
       /** Identity of the extension supplying the skill. */
       extensionId: string;
+    }>
+  | Readonly<{
+      /** Skill bundled with the host's own build, not found on any disk. */
+      kind: "platform";
     }>;
 
 /** Host-owned discovery metadata; bodies are loaded only through skill.load. */
@@ -55,16 +59,32 @@ export type SkillCatalog = Readonly<{
   diagnostics: readonly SkillDiagnostic[];
 }>;
 
+/** The run asking for discovery: a host may show different Sessions different skills. */
+export type SkillCatalogRequest = Readonly<{
+  /** Session whose run is asking. */
+  sessionId: string;
+  /** Cancels the scan. */
+  signal: AbortSignal;
+}>;
+
+/** One skill file requested by a run. */
+export type SkillReadRequest = Readonly<{
+  /** Session whose run is asking. */
+  sessionId: string;
+  /** Name of the skill to load. */
+  name: string;
+  /** Contained supporting file; undefined selects SKILL.md. */
+  file: string | undefined;
+  /** Cancels the read. */
+  signal: AbortSignal;
+}>;
+
 /** Read-only host port. The host owns frontmatter, discovery and containment. */
 export type SkillSource = Readonly<{
   /** Discover available skills without loading their bodies. */
-  catalog: (signal: AbortSignal) => Promise<SkillCatalog>;
+  catalog: (request: SkillCatalogRequest) => Promise<SkillCatalog>;
   /** Load the selected skill body or one contained supporting file. */
-  read: (
-    name: string,
-    file: string | undefined,
-    signal: AbortSignal,
-  ) => Promise<
+  read: (request: SkillReadRequest) => Promise<
     Readonly<{
       /** Name of the loaded skill. */
       name: string;

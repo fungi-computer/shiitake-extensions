@@ -234,28 +234,23 @@ function reportDiagnostics(catalog: SkillCatalog) {
 export function skillsExtension({
   source,
   empty,
-  scanOnStart = true,
 }: Readonly<{
   source: SkillSource;
   /** What to say when no skills are installed, where the host keeps them. */
   empty?: string | undefined;
-  /**
-   * Scan when the run activates. A host whose source acquires a Computer
-   * leaves this off so addressing a Session acquires nothing; the first
-   * model request then takes the scan.
-   */
-  scanOnStart?: boolean | undefined;
 }>): RosteredExtensionV0 {
   // Commands run inside a synchronous core transaction, so /skills shows the
-  // latest discovery: taken at activation and again before each model request.
-  let latest: SkillCatalog | undefined;
-  const discover = Effect.promise((signal) => source.catalog(signal)).pipe(
-    Effect.tap((found) =>
-      Effect.sync(() => {
-        latest = found;
-      }),
-    ),
-  );
+  // latest discovery for its Session, taken before each model request. A
+  // source may answer differently per Session, so no Session sees another's.
+  const latest = new Map<string, SkillCatalog>();
+  const discover = (sessionId: string) =>
+    Effect.promise((signal) => source.catalog({ sessionId, signal })).pipe(
+      Effect.tap((found) =>
+        Effect.sync(() => {
+          latest.set(sessionId, found);
+        }),
+      ),
+    );
   return defineExtension({ id, version: "1.1.0" })
     .config(empty === undefined ? config : { ...config, empty })
     .define({
@@ -275,40 +270,38 @@ export function skillsExtension({
       commands: {
         specs: commands,
         handlers: () => ({
-          skills: ({ input }) =>
-            Effect.sync(() =>
-              latest === undefined
-                ? done({
-                    type: "info",
-                    message: "Skill discovery has not finished yet.",
-                  })
-                : skillsStep(latest, input.name),
-            ),
+          skills: {
+            // Scan outside the transaction when this Session has no catalog yet,
+            // so /skills works before the first model request.
+            prepare: ({ sessionId, input }) =>
+              Effect.gen(function* () {
+                const found =
+                  latest.get(sessionId) ??
+                  (yield* discover(sessionId).pipe(
+                    // A failed scan reads as "not finished"; the next run scans again.
+                    Effect.catchCause(() => Effect.succeed(undefined)),
+                  ));
+                const step =
+                  found === undefined
+                    ? done({
+                        type: "info",
+                        message: "Skill discovery has not finished yet.",
+                      })
+                    : skillsStep(found, input.name);
+                return Effect.succeed(step);
+              }),
+          },
         }),
       },
-      hooks: {
-        start: () =>
-          scanOnStart
-            ? Effect.tryPromise((signal) => source.catalog(signal)).pipe(
-                Effect.tap((found) =>
-                  Effect.sync(() => {
-                    latest = found;
-                  }),
-                ),
-                // A failed first scan leaves /skills waiting for the next run's scan.
-                Effect.ignore,
-              )
-            : Effect.void,
-      },
-      prompt: () =>
+      prompt: (_context, run) =>
         Effect.gen(function* () {
-          const catalog = yield* discover;
+          const catalog = yield* discover(run.sessionId);
           yield* reportDiagnostics(catalog);
           return promptSections(catalog);
         }),
-      tools: () =>
+      tools: (_context, run) =>
         Effect.gen(function* () {
-          const catalog = yield* discover;
+          const catalog = yield* discover(run.sessionId);
           return Mycelium.module({
             id: "botanical.skills",
             name: "skill",
@@ -333,11 +326,12 @@ export function skillsExtension({
                   supportingFiles: z.array(z.string()),
                 }),
                 execute: async ({ name, file }, context) => {
-                  const loaded = await source.read(
+                  const loaded = await source.read({
+                    sessionId: run.sessionId,
                     name,
-                    file === "SKILL.md" ? undefined : file,
-                    context.signal,
-                  );
+                    file: file === "SKILL.md" ? undefined : file,
+                    signal: context.signal,
+                  });
                   return {
                     ...loaded,
                     supportingFiles: [...loaded.supportingFiles],

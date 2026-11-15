@@ -398,7 +398,7 @@ export function oysterAgentExtensions(
       : botanicalExtensionsWithSkillSource(
           botanicalAgentExtensions,
           skills.source,
-          { empty: skills.empty, scanOnStart: false },
+          { empty: skills.empty },
         ),
     source,
   );

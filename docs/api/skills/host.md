@@ -30,9 +30,9 @@ Skills use only the generic prompt and run-tools doors; the host owns files.
 
 #### Parameters
 
-| Parameter           | Type                                                                                                                 |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `__namedParameters` | `Readonly`\<\{ `source`: [`SkillSource`](source.md#skillsource); `empty?`: `string`; `scanOnStart?`: `boolean`; \}\> |
+| Parameter           | Type                                                                                      |
+| ------------------- | ----------------------------------------------------------------------------------------- |
+| `__namedParameters` | `Readonly`\<\{ `source`: [`SkillSource`](source.md#skillsource); `empty?`: `string`; \}\> |
 
 #### Returns
 

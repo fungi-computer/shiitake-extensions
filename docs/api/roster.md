@@ -57,11 +57,11 @@ Add read-only skill discovery over `source` to any roster.
 
 #### Parameters
 
-| Parameter | Type                                                               |
-| --------- | ------------------------------------------------------------------ |
-| `base`    | `ExtensionRosterV0`                                                |
-| `source`  | [`SkillSource`](skills/source.md#skillsource)                      |
-| `options` | `Readonly`\<\{ `empty?`: `string`; `scanOnStart?`: `boolean`; \}\> |
+| Parameter | Type                                          |
+| --------- | --------------------------------------------- |
+| `base`    | `ExtensionRosterV0`                           |
+| `source`  | [`SkillSource`](skills/source.md#skillsource) |
+| `options` | `Readonly`\<\{ `empty?`: `string`; \}\>       |
 
 #### Returns
 

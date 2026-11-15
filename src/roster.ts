@@ -117,7 +117,7 @@ export function botanicalExtensionsWithSubagents(
 export function botanicalExtensionsWithSkillSource(
   base: ExtensionRosterV0,
   source: SkillSource,
-  options: Readonly<{ empty?: string; scanOnStart?: boolean }> = {},
+  options: Readonly<{ empty?: string }> = {},
 ): ExtensionRosterV0 {
   return {
     roster: [...base.roster, skillsExtension({ source, ...options })],

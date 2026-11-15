@@ -29,11 +29,19 @@ import type {
 import { openAgent, sqliteOwner } from "./fixtures/host.js";
 
 function sourceFor(catalog: SkillCatalog) {
-  const reads: { name: string; file: string | undefined }[] = [];
+  const reads: {
+    sessionId: string;
+    name: string;
+    file: string | undefined;
+  }[] = [];
+  const catalogs: string[] = [];
   const source: SkillSource = {
-    catalog: () => Promise.resolve(catalog),
-    read: (name, file) => {
-      reads.push({ name, file });
+    catalog: ({ sessionId }) => {
+      catalogs.push(sessionId);
+      return Promise.resolve(catalog);
+    },
+    read: ({ sessionId, name, file }) => {
+      reads.push({ sessionId, name, file });
       return Promise.resolve({
         name,
         file: file ?? "SKILL.md",
@@ -44,7 +52,7 @@ function sourceFor(catalog: SkillCatalog) {
       });
     },
   };
-  return { source, reads };
+  return { source, reads, catalogs };
 }
 
 async function exercise(
@@ -144,7 +152,7 @@ function prompts(requests: Context[]) {
 
 describe("skills extension", () => {
   it("lists compact metadata and exposes skill.load through forage, with bodies only in tool output", async () => {
-    const { source, reads } = sourceFor({
+    const { source, reads, catalogs } = sourceFor({
       skills: [
         {
           name: "herdr",
@@ -202,9 +210,12 @@ describe("skills extension", () => {
         supportingFiles: [],
       },
     ]);
+    // The run's Session reaches both discovery and the read.
+    expect(catalogs.length).toBeGreaterThan(0);
+    expect(new Set(catalogs)).toEqual(new Set(["skills"]));
     expect(reads).toEqual([
-      { name: "herdr", file: undefined },
-      { name: "herdr", file: "reference.md" },
+      { sessionId: "skills", name: "herdr", file: undefined },
+      { sessionId: "skills", name: "herdr", file: "reference.md" },
     ]);
     expect(JSON.stringify(result.requests[1]?.messages)).toContain(
       "herdr instructions",
@@ -427,7 +438,7 @@ describe("skills extension", () => {
   });
 
   it("advertises /skills, which lists each discovered skill under its folder and shows the chosen file", async () => {
-    const { source } = sourceFor({
+    const { source, catalogs } = sourceFor({
       skills: [
         {
           name: "botanical-retention",
@@ -554,6 +565,8 @@ describe("skills extension", () => {
       expect(notices).toEqual([
         "herdr\nCoordinate teams\n/home/fixture/.agents/skills/herdr/SKILL.md",
       ]);
+      // No prompt ran: /skills took its own scan, for this command's Session.
+      expect(catalogs).toEqual(["garden"]);
       runtime.close();
     } finally {
       await host.close();

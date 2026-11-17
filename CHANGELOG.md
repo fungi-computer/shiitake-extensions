@@ -1,5 +1,11 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.11.3
+
+### Patch Changes
+
+- @fungi.computer/shiitake@0.19.1
+
 ## 0.11.2
 
 ### Patch Changes

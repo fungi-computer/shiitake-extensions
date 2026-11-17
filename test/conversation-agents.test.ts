@@ -94,6 +94,46 @@ it("records accepted create/send once and reads the same footer after reconstruc
   }
 });
 
+it("names the Sessions a conversation sent work to, only for that conversation and Agent", async () => {
+  const fixture = sqliteOwner();
+  try {
+    const host = directory();
+    const conversations = createConversationAgents(fixture.owner);
+    const recorded = conversations.recording("parent", host);
+    if (recorded.create === undefined || recorded.send === undefined)
+      throw new Error("Expected the host's create and send doors");
+    if (recorded.sentSessions === undefined)
+      throw new Error("Expected a conversation to name its sent Sessions");
+    const signal = new AbortController().signal;
+    await recorded.create({ requestId: "create" }, signal);
+    expect(recorded.sentSessions("parent", "child")).toEqual([]);
+    await recorded.send(
+      {
+        agentId: "child",
+        sessionId: "child-session",
+        requestId: "steer-work",
+        text: "work",
+        delivery: "steer",
+      },
+      "parent",
+      signal,
+    );
+    expect(recorded.sentSessions("parent", "child")).toEqual(["child-session"]);
+    expect(recorded.sentSessions("another-parent", "child")).toEqual([]);
+    expect(recorded.sentSessions("parent", "another-child")).toEqual([]);
+    expect(
+      createConversationAgents(fixture.owner)
+        .recording("parent", host)
+        .sentSessions?.("parent", "child"),
+    ).toEqual(["child-session"]);
+    expect(
+      conversations.recording(undefined, host).sentSessions,
+    ).toBeUndefined();
+  } finally {
+    fixture.close();
+  }
+});
+
 it("does not record refused create or send operations", async () => {
   const fixture = sqliteOwner();
   try {

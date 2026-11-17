@@ -177,6 +177,24 @@ export function createConversationAgents(storage: WatchdogSqliteOwner) {
   ): Directory {
     const { create, send } = directory;
     let recorded = directory;
+    if (parentSessionId !== undefined)
+      recorded = {
+        ...recorded,
+        sentSessions: (sourceSessionId, agentId) =>
+          sql()
+            .exec(
+              "SELECT session_id FROM oyster_conversation_agents WHERE parent_session_id = ? AND agent_id = ? AND session_id IS NOT NULL",
+              sourceSessionId,
+              agentId,
+            )
+            .toArray()
+            .map(
+              (row) =>
+                Schema.decodeUnknownSync(
+                  Schema.Struct({ session_id: Schema.String }),
+                )(row).session_id,
+            ),
+      };
     if (create !== undefined && parentSessionId !== undefined)
       recorded = {
         ...recorded,

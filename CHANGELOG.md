@@ -1,5 +1,20 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.11.2
+
+### Patch Changes
+
+- Changes since 0.11.1:
+
+  - fix(shiitake): show a helper's Session in its creator's agents.status
+
+- Updated dependencies
+- Updated dependencies
+  - @fungi.computer/shiitake@0.19.0
+  - @fungi.computer/watchdog@0.1.4
+  - @fungi.computer/knapsack@0.4.14
+  - @fungi.computer/mycelium@0.4.1
+
 ## 0.11.1
 
 ### Patch Changes

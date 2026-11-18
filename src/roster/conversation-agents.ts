@@ -39,10 +39,6 @@ export function assertOrdinaryAgentCreation(
     );
 }
 
-const conversationAgentRow = Schema.Struct({
-  agent_id: Schema.String,
-  session_id: Schema.NullOr(Schema.String),
-});
 const delegatedCommandRow = Schema.Struct({
   parent_session_id: Schema.String,
   agent_id: Schema.String,
@@ -107,24 +103,23 @@ export async function adoptDelegatedGoal(
 }
 
 /**
- * This host's own record of the Agents each conversation created or sent
- * accepted work to, written as its Agent-control directory accepts them
- * (Wiki: agent-runtime-tools-and-clients, read-only sub-agent view). Accepted
- * child command receipts are separately reconciled against their owner's
- * settlement records for the parent's goal guard. Neither record grants
- * authority over a child.
+ * The sub-agent view of one Agent (Wiki: agent-runtime-tools-and-clients,
+ * read-only sub-agent view). Its children are the Agents whose own record
+ * names it as `createdBy`, the one parent edge, so every Session of the Agent
+ * lists the same rows and nothing per Session is recorded. Accepted child
+ * command receipts are kept only to reconcile against their owner's
+ * settlement records for the sending conversation's goal guard; they grant
+ * no authority over a child.
  */
-export function createConversationAgents(storage: WatchdogSqliteOwner) {
+export function createConversationAgents(
+  storage: WatchdogSqliteOwner,
+  /** The Agent this host runs, read when used: the parent of every Agent it created. */
+  agentId: () => string,
+) {
   // Composing a host does no storage I/O; the first record or read prepares it.
   let prepared = false;
   function sql() {
     if (!prepared) {
-      storage.sql.exec(
-        "CREATE TABLE IF NOT EXISTS oyster_conversation_agents (parent_session_id TEXT NOT NULL, agent_id TEXT NOT NULL, session_id TEXT, at INTEGER NOT NULL, PRIMARY KEY (parent_session_id, agent_id)) STRICT",
-      );
-      storage.sql.exec(
-        "CREATE INDEX IF NOT EXISTS idx_oyster_conversation_agents_parent ON oyster_conversation_agents(parent_session_id, at)",
-      );
       storage.sql.exec(
         "CREATE TABLE IF NOT EXISTS oyster_delegated_commands (parent_session_id TEXT NOT NULL, agent_id TEXT NOT NULL, session_id TEXT NOT NULL, command_id TEXT NOT NULL PRIMARY KEY, at INTEGER NOT NULL) STRICT",
       );
@@ -132,78 +127,32 @@ export function createConversationAgents(storage: WatchdogSqliteOwner) {
     }
     return storage.sql;
   }
-  /** A retried create keeps its first row. */
-  function created(parentSessionId: string, agentId: string) {
-    sql().exec(
-      "INSERT OR IGNORE INTO oyster_conversation_agents(parent_session_id, agent_id, session_id, at) VALUES (?, ?, NULL, ?)",
-      parentSessionId,
-      agentId,
-      Date.now(),
-    );
-  }
-  /** A send may not know its Session until the recipient accepts it. */
-  function sent(
-    parentSessionId: string,
-    agentId: string,
-    sessionId: string | undefined,
+  /** Watch one accepted child command until its owner records settlement. */
+  function watch(
+    sendingSessionId: string,
+    childAgentId: string,
+    sessionId: string,
     commandId: string,
   ) {
     sql().exec(
-      "INSERT INTO oyster_conversation_agents(parent_session_id, agent_id, session_id, at) VALUES (?, ?, ?, ?) ON CONFLICT(parent_session_id, agent_id) DO UPDATE SET session_id = excluded.session_id, at = excluded.at",
-      parentSessionId,
-      agentId,
-      sessionId ?? null,
+      "INSERT OR REPLACE INTO oyster_delegated_commands(parent_session_id, agent_id, session_id, command_id, at) VALUES (?, ?, ?, ?, ?)",
+      sendingSessionId,
+      childAgentId,
+      sessionId,
+      commandId,
       Date.now(),
     );
-    if (sessionId !== undefined) {
-      sql().exec(
-        "INSERT OR REPLACE INTO oyster_delegated_commands(parent_session_id, agent_id, session_id, command_id, at) VALUES (?, ?, ?, ?, ?)",
-        parentSessionId,
-        agentId,
-        sessionId,
-        commandId,
-        Date.now(),
-      );
-      sql().exec(
-        "DELETE FROM oyster_delegated_commands WHERE command_id NOT IN (SELECT command_id FROM oyster_delegated_commands ORDER BY at DESC LIMIT ?)",
-        maxWatchedCommands,
-      );
-    }
+    sql().exec(
+      "DELETE FROM oyster_delegated_commands WHERE command_id NOT IN (SELECT command_id FROM oyster_delegated_commands ORDER BY at DESC LIMIT ?)",
+      maxWatchedCommands,
+    );
   }
-  /** One conversation's directory: its accepted creates and sends are recorded. */
+  /** The Agent's directory: it names its caller and watches accepted sends. */
   function recording<Directory extends SendingDirectory>(
-    parentSessionId: string | undefined,
     directory: Directory,
   ): Directory {
-    const { create, send } = directory;
-    let recorded = directory;
-    if (parentSessionId !== undefined)
-      recorded = {
-        ...recorded,
-        sentSessions: (sourceSessionId, agentId) =>
-          sql()
-            .exec(
-              "SELECT session_id FROM oyster_conversation_agents WHERE parent_session_id = ? AND agent_id = ? AND session_id IS NOT NULL",
-              sourceSessionId,
-              agentId,
-            )
-            .toArray()
-            .map(
-              (row) =>
-                Schema.decodeUnknownSync(
-                  Schema.Struct({ session_id: Schema.String }),
-                )(row).session_id,
-            ),
-      };
-    if (create !== undefined && parentSessionId !== undefined)
-      recorded = {
-        ...recorded,
-        create: async (request, signal) => {
-          const agent = await create(request, signal);
-          created(parentSessionId, agent.agentId);
-          return agent;
-        },
-      };
+    const { send } = directory;
+    let recorded: Directory = { ...directory, callerAgentId: agentId };
     if (send !== undefined)
       recorded = {
         ...recorded,
@@ -216,7 +165,13 @@ export function createConversationAgents(storage: WatchdogSqliteOwner) {
           );
           if (accepted.status === "accepted") {
             const sessionId = accepted.sessionId ?? task.sessionId;
-            sent(sourceSessionId, task.agentId, sessionId, accepted.commandId);
+            if (sessionId !== undefined)
+              watch(
+                sourceSessionId,
+                task.agentId,
+                sessionId,
+                accepted.commandId,
+              );
             // A send that opens a new Session puts it under a goal, so the
             // lane keeps working until it reports complete or blocked. A
             // retry replays the same request id, so the goal is set once.
@@ -244,7 +199,7 @@ export function createConversationAgents(storage: WatchdogSqliteOwner) {
     return recorded;
   }
   return {
-    /** Bind acceptance recording to this conversation's existing directory. */
+    /** Bind the caller and send watching to the Agent's existing directory. */
     recording,
     /** Agent-control tools bound to the conversation that acquires them. */
     control: (
@@ -252,17 +207,15 @@ export function createConversationAgents(storage: WatchdogSqliteOwner) {
         parentSessionId: string | undefined,
       ) => AgentControlDirectory,
     ): CapabilitySource => ({
-      id: createAgentControlSource(
-        recording(undefined, directoryFor(undefined)),
-      ).id,
+      id: createAgentControlSource(recording(directoryFor(undefined))).id,
       acquire: (context) => {
         const parentSessionId = context.session?.sessionId;
         return createAgentControlSource(
-          recording(parentSessionId, directoryFor(parentSessionId)),
+          recording(directoryFor(parentSessionId)),
         ).acquire(context);
       },
     }),
-    /** The footer rows for one conversation; archived and unknown Agents leave it. */
+    /** The footer rows: this Agent's children; archived and unknown Agents leave it. */
     source: (
       directory: Pick<AgentControlDirectory, "list"> &
         Pick<SubagentSource, "open">,
@@ -372,25 +325,16 @@ export function createConversationAgents(storage: WatchdogSqliteOwner) {
           for (const commandId of live) poll(commandId);
           return live.length > 0;
         },
-        read: async (sessionId, limit) => {
-          const rows = sql()
-            .exec(
-              "SELECT agent_id, session_id FROM oyster_conversation_agents WHERE parent_session_id = ? ORDER BY at DESC, agent_id",
-              sessionId,
-            )
-            .toArray()
-            .map((row) => Schema.decodeUnknownSync(conversationAgentRow)(row));
-          const known = new Map(
-            (await directory.list(new AbortController().signal)).map(
-              (agent) => [agent.agentId, agent.name],
-            ),
-          );
-          const agents = rows.flatMap((row) => {
-            const name = known.get(row.agent_id);
-            return name === undefined
-              ? []
-              : [{ agentId: row.agent_id, name, sessionId: row.session_id }];
-          });
+        // Every Session of this Agent lists the same children; the subagents
+        // view shows each child's lead Session.
+        read: async (_sessionId, limit) => {
+          const agents = (await directory.list(new AbortController().signal))
+            .filter((agent) => agent.createdBy === agentId())
+            .map((agent) => ({
+              agentId: agent.agentId,
+              name: agent.name,
+              sessionId: null,
+            }));
           return {
             agents: agents.slice(0, limit),
             more: Math.max(0, agents.length - limit),

@@ -116,7 +116,12 @@ export async function openAgent(
   overrides: Partial<
     Pick<
       ShiitakeEffectOptions,
-      "model" | "tools" | "admission" | "recipientStatus" | "recipientParent"
+      | "model"
+      | "tools"
+      | "admission"
+      | "recipientStatus"
+      | "recipientParent"
+      | "createdBy"
     >
   > = {},
   logger?: Logger.Logger<unknown, unknown>,

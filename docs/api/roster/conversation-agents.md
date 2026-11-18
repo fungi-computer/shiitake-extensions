@@ -74,29 +74,30 @@ delivery.
 ### createConversationAgents()
 
 ```ts
-function createConversationAgents(storage): object;
+function createConversationAgents(storage, agentId): object;
 ```
 
-This host's own record of the Agents each conversation created or sent accepted
-work to, written as its Agent-control directory accepts them (Wiki:
-agent-runtime-tools-and-clients, read-only sub-agent view). Accepted child
-command receipts are separately reconciled against their owner's settlement
-records for the parent's goal guard. Neither record grants authority over a
-child.
+The sub-agent view of one Agent (Wiki: agent-runtime-tools-and-clients,
+read-only sub-agent view). Its children are the Agents whose own record names it
+as `createdBy`, the one parent edge, so every Session of the Agent lists the
+same rows and nothing per Session is recorded. Accepted child command receipts
+are kept only to reconcile against their owner's settlement records for the
+sending conversation's goal guard; they grant no authority over a child.
 
 #### Parameters
 
-| Parameter | Type                  |
-| --------- | --------------------- |
-| `storage` | `WatchdogSqliteOwner` |
+| Parameter | Type                  | Description                                                                     |
+| --------- | --------------------- | ------------------------------------------------------------------------------- |
+| `storage` | `WatchdogSqliteOwner` | -                                                                               |
+| `agentId` | () => `string`        | The Agent this host runs, read when used: the parent of every Agent it created. |
 
 #### Returns
 
-| Name          | Type                                                                     | Description                                                                                                                                     |
-| ------------- | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `recording()` | \<`Directory`\>(`parentSessionId`, `directory`) => `Directory`           | Bind acceptance recording to this conversation's existing directory. One conversation's directory: its accepted creates and sends are recorded. |
-| `control()`   | (`directoryFor`) => `CapabilitySource`                                   | Agent-control tools bound to the conversation that acquires them.                                                                               |
-| `source()`    | (`directory`) => [`SubagentSource`](../subagents/host.md#subagentsource) | The footer rows for one conversation; archived and unknown Agents leave it.                                                                     |
+| Name          | Type                                                                     | Description                                                                                                                                 |
+| ------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `recording()` | \<`Directory`\>(`directory`) => `Directory`                              | Bind the caller and send watching to the Agent's existing directory. The Agent's directory: it names its caller and watches accepted sends. |
+| `control()`   | (`directoryFor`) => `CapabilitySource`                                   | Agent-control tools bound to the conversation that acquires them.                                                                           |
+| `source()`    | (`directory`) => [`SubagentSource`](../subagents/host.md#subagentsource) | The footer rows: this Agent's children; archived and unknown Agents leave it.                                                               |
 
 ---
 

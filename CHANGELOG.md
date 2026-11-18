@@ -1,5 +1,22 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.11.8
+
+### Patch Changes
+
+- Changes since 0.11.7:
+
+  - fix(subagents): keep the Agents a conversation sent work to in the footer
+  - fix(subagents): read the host Agent's id when the roster is used
+  - fix(subagents): let a starting extension reconcile once its Agent binds
+  - fix(subagents): route a made-by Agent's attention and reports to its maker
+  - fix(subagents): derive the parent edge from createdBy, drop the roster
+
+- Updated dependencies
+  - @fungi.computer/shiitake@0.20.3
+  - @fungi.computer/knapsack@0.4.19
+  - @fungi.computer/mycelium@0.4.6
+
 ## 0.11.7
 
 ### Patch Changes

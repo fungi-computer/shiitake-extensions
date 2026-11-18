@@ -54,7 +54,7 @@ import {
 
 /** The rules the model follows; the describe page and an active goal's prompt share them. */
 const rules =
-  "You may start a goal yourself when none is current. Before marking complete audit every requirement against evidence; complete only after actual achievement. Block only after the same external impasse for three consecutive goal turns; a blocked goal stays paused until it is resumed. You may complete, block, clear or resume a goal that paused on its own (stalled, blocked or failed work). A goal a person or your delegator paused you may only complete. Only a person or the exact Agent Session that delegated this Session pauses or clears a live goal; that delegator may resume its own pause with agents.goal. Person controls stay with the person. Use plan.update_plan for multi-step work when available.";
+  "You may start a goal yourself when none is current. Before marking complete audit every requirement against evidence; complete only after actual achievement. Block only after the same external impasse for three consecutive goal turns; a blocked goal stays paused until it is resumed. You may complete, block, clear or resume a goal that paused on its own (stalled, blocked or failed work). A goal a person or your delegator paused you may only complete. Only a person, the Agent that delegated this Session or the Agent that made you pauses or clears a live goal, from any of its Sessions; that Agent may resume its own pause with agents.goal. Person controls stay with the person. Use plan.update_plan for multi-step work when available.";
 
 /** Hashed prose and policy: every constant goal reads comes from here. */
 const config = {
@@ -979,7 +979,7 @@ function clearGoal(ctx: Context, sessionId: string) {
   });
 }
 
-/** Authentication is host context; authority is only this Session's immutable first delegator. */
+/** Authentication is host context; authority is the delegating or making Agent's. */
 function controlAgent(
   ctx: Context,
   sessionId: string,
@@ -994,11 +994,14 @@ function controlAgent(
           message: "Only an authenticated Agent can control a delegated goal",
         }),
       );
+    // Custody is an Agent's, from any of its Sessions: the Agent whose mail
+    // delegated this Session, and the Agent that made this one.
     const parent = yield* ctx.sessionParent(sessionId);
-    if (
-      parent?.agentId !== caller.agentId ||
-      parent.sessionId !== caller.sessionId
-    )
+    const maker = yield* ctx.sessionMaker(sessionId);
+    const controller = [parent, maker].find(
+      (candidate) => candidate?.agentId === caller.agentId,
+    );
+    if (controller === undefined || controller === null)
       return { result: "refused", reason: "not_delegator" } as const;
     const current = yield* ctx.state.goals.get(sessionId);
     if (Option.isNone(current)) return { result: "no_goal" } as const;
@@ -1023,7 +1026,7 @@ function controlAgent(
     const next =
       heldByController(goal) && goal.pauseCause?.kind !== "delegator"
         ? goal
-        : paused(goal, "delegator", `${parent.name}: ${input.reason}`);
+        : paused(goal, "delegator", `${controller.name}: ${input.reason}`);
     yield* commitGoal(ctx, next);
     yield* ctx.observe(sessionId);
     return { result: "paused", goal: committed(next) } as const;

@@ -144,7 +144,7 @@ export const goalContract = {
   id: ExtensionId.make("botanical-session-goal"),
   /** Goal commands admitted by the Session owner. */
   commands: {
-    /** Exact first delegator's controls; never an ordinary person command. */
+    /** The delegating or making Agent's controls, from any of its Sessions; never a person command. */
     controlAgent: {
       /** The child's Session owns this goal. */
       scope: "session",
@@ -158,7 +158,7 @@ export const goalContract = {
       /** Applied control or an explicit refusal without mutation. */
       output: Schema.Union([
         Schema.Struct({
-          /** The exact delegator paused this goal. */
+          /** The delegating or making Agent paused this goal. */
           result: Schema.Literal("paused"),
           /** Current paused goal and its controller attribution. */
           goal: Goal,
@@ -170,7 +170,7 @@ export const goalContract = {
           goal: Goal,
         }),
         Schema.Struct({
-          /** The exact delegator cleared the goal. */
+          /** The delegating or making Agent cleared the goal. */
           result: Schema.Literal("cleared"),
         }),
         Schema.Struct({

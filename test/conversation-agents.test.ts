@@ -20,7 +20,13 @@ afterEach(() => vi.restoreAllMocks());
 
 function directory(): AgentControlDirectory {
   return {
-    list: () => Promise.resolve([{ agentId: "child", name: "Child" }]),
+    list: () =>
+      Promise.resolve([
+        { agentId: "maker", name: "Maker", createdBy: null },
+        { agentId: "child", name: "Child", createdBy: "maker" },
+        { agentId: "peer", name: "Peer", createdBy: null },
+        { agentId: "cousin", name: "Cousin", createdBy: "another-maker" },
+      ]),
     create: () => Promise.resolve({ agentId: "child", name: "Child" }),
     send: () =>
       Promise.resolve({ status: "accepted", commandId: "accepted-work" }),
@@ -35,78 +41,68 @@ it("composes lazily without touching host storage", () => {
   const fixture = sqliteOwner();
   try {
     const exec = vi.spyOn(fixture.owner.sql, "exec");
-    createConversationAgents(fixture.owner);
+    createConversationAgents(fixture.owner, () => "maker");
     expect(exec).not.toHaveBeenCalled();
   } finally {
     fixture.close();
   }
 });
 
-it("records accepted create/send once and reads the same footer after reconstructing the roster", async () => {
+const rosterTable = (fixture: ReturnType<typeof sqliteOwner>) =>
+  fixture.owner.sql
+    .exec(
+      "SELECT name FROM sqlite_schema WHERE type = 'table' AND name LIKE 'oyster_%' ORDER BY name",
+    )
+    .toArray();
+
+it("lists the Agents this Agent created, the same in every one of its Sessions", async () => {
   const fixture = sqliteOwner();
   try {
     const host = directory();
-    const conversations = createConversationAgents(fixture.owner);
-    const recorded = conversations.recording("parent", host);
-    if (recorded.create === undefined || recorded.send === undefined)
-      throw new Error("Expected the host's create and send doors");
-    const signal = new AbortController().signal;
-    await recorded.create({ requestId: "create" }, signal);
-    await recorded.create({ requestId: "create" }, signal);
-    expect(conversations.source(host).hasLiveChildCommand("parent")).toBe(
-      false,
-    );
-    expect(await conversations.source(host).read("parent", 10)).toEqual({
+    const source = createConversationAgents(
+      fixture.owner,
+      () => "maker",
+    ).source(host);
+    // createdBy on the child's own Agent record is the one parent edge: a peer
+    // the maker only sends work to, and another maker's child, are not listed.
+    const children = {
       agents: [{ agentId: "child", name: "Child", sessionId: null }],
       more: 0,
-    });
-    await recorded.send(
-      {
-        agentId: "child",
-        sessionId: "child-session",
-        requestId: "child-work",
-        text: "work",
-        delivery: "followUp",
-      },
-      "parent",
-      signal,
-    );
-    const reopened = createConversationAgents(fixture.owner).source(host);
-    await expect.poll(() => reopened.hasLiveChildCommand("parent")).toBe(false);
-    expect(reopened.hasLiveChildCommand("another-parent")).toBe(false);
-    expect(await reopened.read("parent", 10)).toEqual({
-      agents: [{ agentId: "child", name: "Child", sessionId: "child-session" }],
-      more: 0,
-    });
-    expect(await reopened.read("another-parent", 10)).toEqual({
-      agents: [],
-      more: 0,
-    });
-    expect(reopened.open).toBe(host.open);
-    expect(await reopened.read("parent", 0)).toEqual({ agents: [], more: 1 });
+    };
+    expect(await source.read("parent", 10)).toEqual(children);
+    expect(await source.read("a-new-parent-session", 10)).toEqual(children);
+    expect(source.open).toBe(host.open);
+    expect(await source.read("parent", 0)).toEqual({ agents: [], more: 1 });
     const archived = { ...host, list: () => Promise.resolve([]) };
-    expect(await conversations.source(archived).read("parent", 10)).toEqual({
-      agents: [],
-      more: 0,
-    });
+    expect(
+      await createConversationAgents(fixture.owner, () => "maker")
+        .source(archived)
+        .read("parent", 10),
+    ).toEqual({ agents: [], more: 0 });
+    // Reading the roster writes nothing: there is no per-Session record.
+    expect(rosterTable(fixture)).toEqual([]);
   } finally {
     fixture.close();
   }
 });
 
-it("names the Sessions a conversation sent work to, only for that conversation and Agent", async () => {
+it("keeps no per-Session roster: create and send record only the accepted command", async () => {
   const fixture = sqliteOwner();
   try {
     const host = directory();
-    const conversations = createConversationAgents(fixture.owner);
-    const recorded = conversations.recording("parent", host);
+    const conversations = createConversationAgents(
+      fixture.owner,
+      () => "maker",
+    );
+    const recorded = conversations.recording(host);
     if (recorded.create === undefined || recorded.send === undefined)
       throw new Error("Expected the host's create and send doors");
-    if (recorded.sentSessions === undefined)
-      throw new Error("Expected a conversation to name its sent Sessions");
+    // Status reads custody from the Agent this directory acts for.
+    expect(recorded.callerAgentId?.()).toBe("maker");
+    expect(recorded).not.toHaveProperty("sentSessions");
     const signal = new AbortController().signal;
     await recorded.create({ requestId: "create" }, signal);
-    expect(recorded.sentSessions("parent", "child")).toEqual([]);
+    expect(rosterTable(fixture)).toEqual([]);
     await recorded.send(
       {
         agentId: "child",
@@ -118,17 +114,23 @@ it("names the Sessions a conversation sent work to, only for that conversation a
       "parent",
       signal,
     );
-    expect(recorded.sentSessions("parent", "child")).toEqual(["child-session"]);
-    expect(recorded.sentSessions("another-parent", "child")).toEqual([]);
-    expect(recorded.sentSessions("parent", "another-child")).toEqual([]);
+    expect(rosterTable(fixture)).toEqual([
+      { name: "oyster_delegated_commands" },
+    ]);
     expect(
-      createConversationAgents(fixture.owner)
-        .recording("parent", host)
-        .sentSessions?.("parent", "child"),
-    ).toEqual(["child-session"]);
-    expect(
-      conversations.recording(undefined, host).sentSessions,
-    ).toBeUndefined();
+      fixture.owner.sql
+        .exec(
+          "SELECT parent_session_id, agent_id, session_id, command_id FROM oyster_delegated_commands",
+        )
+        .toArray(),
+    ).toEqual([
+      {
+        parent_session_id: "parent",
+        agent_id: "child",
+        session_id: "child-session",
+        command_id: "accepted-work",
+      },
+    ]);
   } finally {
     fixture.close();
   }
@@ -137,13 +139,16 @@ it("names the Sessions a conversation sent work to, only for that conversation a
 it("does not record refused create or send operations", async () => {
   const fixture = sqliteOwner();
   try {
-    const conversations = createConversationAgents(fixture.owner);
+    const conversations = createConversationAgents(
+      fixture.owner,
+      () => "maker",
+    );
     const host: AgentControlDirectory = {
       ...directory(),
       create: () => Promise.reject(new Error("creation refused")),
       send: () => Promise.reject(new Error("send refused")),
     };
-    const recorded = conversations.recording("parent", host);
+    const recorded = conversations.recording(host);
     if (recorded.create === undefined || recorded.send === undefined)
       throw new Error("Expected the host's create and send doors");
     const signal = new AbortController().signal;
@@ -163,10 +168,10 @@ it("does not record refused create or send operations", async () => {
         signal,
       ),
     ).rejects.toThrow("send refused");
-    expect(await conversations.source(host).read("parent", 10)).toEqual({
-      agents: [],
-      more: 0,
-    });
+    expect(rosterTable(fixture)).toEqual([]);
+    expect(conversations.source(host).hasLiveChildCommand("parent")).toBe(
+      false,
+    );
   } finally {
     fixture.close();
   }
@@ -175,7 +180,10 @@ it("does not record refused create or send operations", async () => {
 it("does not count relay-held mail as accepted delegated work", async () => {
   const fixture = sqliteOwner();
   try {
-    const conversations = createConversationAgents(fixture.owner);
+    const conversations = createConversationAgents(
+      fixture.owner,
+      () => "maker",
+    );
     const host: AgentControlDirectory = {
       ...directory(),
       send: () =>
@@ -185,7 +193,7 @@ it("does not count relay-held mail as accepted delegated work", async () => {
           message: "waiting: recipient offline",
         }),
     };
-    const recorded = conversations.recording("parent", host);
+    const recorded = conversations.recording(host);
     if (recorded.send === undefined) throw new Error("Expected send door");
     await recorded.send(
       {
@@ -268,7 +276,10 @@ it("bounds each live child-command tick to three owner reads, then stops at sett
       ...directory(),
       send: () => Promise.resolve(accepted),
     };
-    const conversations = createConversationAgents(fixture.owner);
+    const conversations = createConversationAgents(
+      fixture.owner,
+      () => "maker",
+    );
     let reads = 0;
     const source = conversations.source({
       list: host.list,
@@ -297,7 +308,7 @@ it("bounds each live child-command tick to three owner reads, then stops at sett
           release: () => Promise.resolve(),
         }),
     });
-    const recorded = conversations.recording("parent", host);
+    const recorded = conversations.recording(host);
     if (recorded.send === undefined) throw new Error("Expected send door");
     await recorded.send(
       {
@@ -333,7 +344,10 @@ it("bounds each live child-command tick to three owner reads, then stops at sett
 it("uses the recipient's admitted Session when a delegated send omits one", async () => {
   const fixture = sqliteOwner();
   try {
-    const conversations = createConversationAgents(fixture.owner);
+    const conversations = createConversationAgents(
+      fixture.owner,
+      () => "maker",
+    );
     const host: AgentControlDirectory = {
       ...directory(),
       send: () =>
@@ -343,7 +357,7 @@ it("uses the recipient's admitted Session when a delegated send omits one", asyn
           sessionId: "recipient-session",
         }),
     };
-    const recorded = conversations.recording("parent", host);
+    const recorded = conversations.recording(host);
     if (recorded.send === undefined) throw new Error("Expected send door");
     await recorded.send(
       {
@@ -356,14 +370,14 @@ it("uses the recipient's admitted Session when a delegated send omits one", asyn
       "parent",
       new AbortController().signal,
     );
-    const source = conversations.source(host);
-    await expect.poll(() => source.hasLiveChildCommand("parent")).toBe(false);
-    expect(await source.read("parent", 1)).toEqual({
-      agents: [
-        { agentId: "child", name: "Child", sessionId: "recipient-session" },
-      ],
-      more: 0,
-    });
+    expect(
+      fixture.owner.sql
+        .exec(
+          "SELECT session_id FROM oyster_delegated_commands WHERE command_id = ?",
+          "first-command",
+        )
+        .toArray(),
+    ).toEqual([{ session_id: "recipient-session" }]);
   } finally {
     fixture.close();
   }
@@ -386,7 +400,7 @@ it("retains ordinary creation admission and the base roster plus subagent grant"
   const fixture = sqliteOwner();
   try {
     const extensions = oysterAgentExtensions(
-      createConversationAgents(fixture.owner).source(host),
+      createConversationAgents(fixture.owner, () => "maker").source(host),
     );
     expect(extensions.roster).toHaveLength(
       botanicalAgentExtensions.roster.length + 1,
@@ -405,7 +419,10 @@ it("a sessionless send puts the recipient's new Session under a goal; goal:false
   const childStore = sqliteOwner();
   const child = await openAgent(childStore.owner, grantAll([goalExtension]));
   try {
-    const conversations = createConversationAgents(fixture.owner);
+    const conversations = createConversationAgents(
+      fixture.owner,
+      () => "maker",
+    );
     // The recipient admits the send into its new Session, as delivery does.
     const accept: NonNullable<AgentControlDirectory["send"]> = async (task) => {
       const sessionId = `lane-${task.requestId}`;
@@ -426,7 +443,7 @@ it("a sessionless send puts the recipient's new Session under a goal; goal:false
           release: () => Promise.resolve(),
         }),
     };
-    const recorded = conversations.recording("parent", host);
+    const recorded = conversations.recording(host);
     const signal = new AbortController().signal;
     const objectiveOf = async (requestId: string) => {
       const session = child.session(`lane-${requestId}`);

@@ -236,7 +236,7 @@ it("the exact delegator pauses, resumes only its own pause, and clears with prov
   }
 });
 
-it("a sibling that later sent work and another Session of the parent are not the delegator", async () => {
+it("a sibling that later sent work is not the delegator; any other Session of the delegating Agent is", async () => {
   const host = await delegatedGoal();
   try {
     const sibling = {
@@ -255,18 +255,30 @@ it("a sibling that later sent work and another Session of the parent are not the
         createdAt: 2,
       }),
     );
-    for (const caller of [
-      sibling,
-      { ...delegator, sessionId: "other-session" },
-    ])
-      for (const action of ["pause", "resume", "clear"])
-        expect(
-          await host.goal.call(
-            "controlAgent",
-            { action, reason: "Not mine" },
-            caller,
-          ),
-        ).toEqual({ result: "refused", reason: "not_delegator" });
+    for (const action of ["pause", "resume", "clear"])
+      expect(
+        await host.goal.call(
+          "controlAgent",
+          { action, reason: "Not mine" },
+          sibling,
+        ),
+      ).toEqual({ result: "refused", reason: "not_delegator" });
+    // Custody is the delegating Agent's: a new Session of it pauses and resumes.
+    const restarted = { ...delegator, sessionId: "other-session" };
+    expect(
+      await host.goal.call(
+        "controlAgent",
+        { action: "pause", reason: "Back after a restart" },
+        restarted,
+      ),
+    ).toMatchObject({ result: "paused", goal: { state: "paused" } });
+    expect(
+      await host.goal.call(
+        "controlAgent",
+        { action: "resume", reason: "Carry on" },
+        restarted,
+      ),
+    ).toMatchObject({ result: "resumed", goal: { state: "active" } });
     await expect(
       host.goal.call("controlAgent", {
         action: "clear",

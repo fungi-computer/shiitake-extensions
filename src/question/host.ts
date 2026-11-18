@@ -625,10 +625,7 @@ function respond(ctx: Context, sessionId: string, input: ResponseInput) {
     if (row.pending !== null)
       return yield* record({ result: "closed", status: row.pending.status });
     // A person may always answer; an Agent only when the ask waits on it.
-    if (
-      input.kind === "agent_answer" &&
-      !waitsOn(row, input.caller.agentId, input.caller.sessionId)
-    )
+    if (input.kind === "agent_answer" && !waitsOn(row, input.caller.agentId))
       // A refusal changes nothing, so it must not spend the request id.
       return { result: "refused", reason: "not_sender" } as const;
     if (input.kind === "answer" || input.kind === "agent_answer") {
@@ -646,11 +643,12 @@ function respond(ctx: Context, sessionId: string, input: ResponseInput) {
   });
 }
 
-/** Whether this ask waits on exactly this Agent Session. */
-function waitsOn(row: AskRow, agentId: string, sessionId: string): boolean {
-  return (
-    row.waitingOn?.agentId === agentId && row.waitingOn.sessionId === sessionId
-  );
+/**
+ * Whether this ask waits on this Agent. Custody is the Agent's, not one of its
+ * Sessions: any Session of the Agent may answer, escalate or be reminded.
+ */
+function waitsOn(row: AskRow, agentId: string): boolean {
+  return row.waitingOn?.agentId === agentId;
 }
 
 function respondPerson(
@@ -696,6 +694,46 @@ function checkTimer(askId: string): string {
   return `check:${askId}`;
 }
 
+/** Rows one reconciliation page reads; the collection's own page ceiling. */
+const reconcilePage = 64;
+
+/**
+ * In an Agent another Agent made, a parked question that waits on a person
+ * only because it was asked before its turns carried their maker goes to
+ * that maker, as a new question would. A question a parent escalated stays
+ * with the person. Running it again changes nothing.
+ */
+function routeParkedAsksToMaker(ctx: Context) {
+  return Effect.gen(function* () {
+    let after: string | undefined;
+    for (;;) {
+      const page = yield* ctx.state.asks.page({ after, limit: reconcilePage });
+      for (const row of page) {
+        if (
+          row.status !== "parked" ||
+          row.pending !== null ||
+          row.waitingOn !== undefined ||
+          row.escalated !== undefined
+        )
+          continue;
+        const maker = yield* ctx.sessionMaker(row.sessionId);
+        if (maker === null) continue;
+        const moved: AskRow = { ...row, waitingOn: maker };
+        yield* ctx.state.asks.put(moved);
+        yield* ctx.timers.set(
+          checkTimer(row.askId),
+          (yield* Clock.currentTimeMillis) + ctx.config.senderCheckMs,
+        );
+        yield* ctx.attention.set(row.sessionId, askAttention(moved));
+        yield* ctx.observe(row.sessionId);
+      }
+      const last = page.at(-1);
+      if (page.length < reconcilePage || last === undefined) return;
+      after = last.askId;
+    }
+  });
+}
+
 /** Hand an ask to a person, preserving why it left the Agent chain. */
 function escalateAsk(
   ctx: Context,
@@ -738,16 +776,12 @@ function escalateFromAgent(
       };
       return answered;
     }
-    if (
-      row.waitingOn === undefined ||
-      !waitsOn(row, caller.agentId, caller.sessionId)
-    ) {
+    if (row.waitingOn === undefined || !waitsOn(row, caller.agentId)) {
       // Replaying the same handoff lets the host retry its idempotent parent
       // notification after an ambiguous transport failure, without moving it again.
       if (
         row.escalated?.reason === "escalated" &&
         row.escalated.by.agentId === caller.agentId &&
-        row.escalated.by.sessionId === caller.sessionId &&
         row.escalated.note === note
       )
         return row.waitingOn === undefined
@@ -763,7 +797,12 @@ function escalateFromAgent(
       };
       return refused;
     }
-    const by = row.waitingOn;
+    // The escalating Session acts for the Agent the ask waits on.
+    const by = {
+      agentId: caller.agentId,
+      sessionId: caller.sessionId,
+      name: row.waitingOn.name,
+    };
     // Preparation read the host outside SQLite. Do not use absent/stale evidence
     // as proof of a root; closed/replayed items above need no host lookup.
     if (next === undefined)
@@ -1134,6 +1173,22 @@ export function questionExtensionFor(
       attention: true,
       timers: true,
       hooks: {
+        // Opening the Agent, as reading it does, re-routes what an older
+        // build left with a person, once the Agent is bound.
+        start: (ctx) =>
+          ctx.config.routesToSender
+            ? Effect.asVoid(
+                Effect.forkScoped(
+                  ctx
+                    .transact(routeParkedAsksToMaker(ctx))
+                    .pipe(
+                      Effect.catch((cause) =>
+                        Effect.logWarning("question.route_to_maker", cause),
+                      ),
+                    ),
+                ),
+              )
+            : Effect.void,
         onSettled: (ctx, page) =>
           Effect.forEach(page, (run) => settle(ctx, run), { discard: true }),
         onTimer: {
@@ -1159,11 +1214,7 @@ export function questionExtensionFor(
                   ) {
                     if (
                       recipient !== undefined &&
-                      waitsOn(
-                        row.value,
-                        recipient.agentId,
-                        recipient.sessionId,
-                      ) &&
+                      waitsOn(row.value, recipient.agentId) &&
                       (status === "archived" || status === "absent")
                     )
                       yield* escalateAsk(ctx, row.value, {
@@ -1250,11 +1301,14 @@ export function questionExtensionFor(
                   found.value.sessionId === sessionId &&
                   found.value.pending === null &&
                   found.value.waitingOn !== undefined &&
-                  waitsOn(found.value, caller.agentId, caller.sessionId)
+                  waitsOn(found.value, caller.agentId)
                 ) {
-                  const parent = yield* ctx.recipientParent(
-                    found.value.waitingOn,
-                  );
+                  // The escalating Session's own parent is the next Agent up.
+                  const parent = yield* ctx.recipientParent({
+                    agentId: caller.agentId,
+                    sessionId: caller.sessionId,
+                    name: found.value.waitingOn.name,
+                  });
                   if (parent === null) next = null;
                   else {
                     const status = yield* ctx.recipientStatus(parent);

@@ -41,6 +41,11 @@ export async function questionHost(
     codes?: readonly string[];
     /** The Agent Session that sends the asking work as delegated mail. */
     sender?: Readonly<{ agentId: string; sessionId: string; name: string }>;
+    /**
+     * The Agent that made this one (its `createdBy`). Its mail starts the
+     * Session; the asking turn is then a person's own message.
+     */
+    maker?: Readonly<{ agentId: string; sessionId: string; name: string }>;
     recipientStatus?: import("@fungi.computer/shiitake/effect").ShiitakeEffectOptions["recipientStatus"];
     recipientParent?: import("@fungi.computer/shiitake/effect").ShiitakeEffectOptions["recipientParent"];
     program?: (
@@ -52,6 +57,7 @@ export async function questionHost(
   const store = options.store ?? sqliteOwner();
   const faux = fauxModel([]);
   faux.setResponses([
+    ...(options.maker === undefined ? [] : [fauxAssistantMessage("Started.")]),
     fauxAssistantMessage(
       (options.codes ?? ["question.ask"]).map((code) =>
         fauxToolCall("execute", { code }),
@@ -65,46 +71,50 @@ export async function questionHost(
   let result: SandboxValue;
   let offered: string[] = [];
   const settlements: unknown[] = [];
+  const overrides: NonNullable<Parameters<typeof openAgent>[2]> = {
+    recipientStatus:
+      options.recipientStatus ?? (() => Effect.succeed("unknown")),
+    recipientParent: options.recipientParent ?? (() => Effect.succeed(null)),
+    model: {
+      acquire: () =>
+        Effect.succeed({
+          retryable: () => false,
+          model: faux.model,
+          stream: faux.stream,
+          release: Effect.void,
+        }),
+    },
+    tools: {
+      modules: [],
+      sources: [],
+      execution: { timeoutMs: options.timeoutMs ?? 180_000 },
+      sandbox: fromTypedSandbox({
+        execute: async (request) => {
+          offered = Object.keys(request.bindings);
+          const ask = request.bindings.question?.ask;
+          if (ask === undefined)
+            throw new Error("Ask capability is not offered");
+          if (options.priorInput !== undefined) await ask(options.priorInput);
+          const response =
+            options.program === undefined
+              ? await ask(input)
+              : await options.program(request.bindings, request.code);
+          result = response;
+          await options.afterResult?.();
+          return response;
+        },
+      }),
+    },
+  };
+  // The made-by Agent's own record names its maker.
+  if (options.maker !== undefined)
+    Object.assign(overrides, { createdBy: options.maker.agentId });
   const host = await openAgent(
     store.owner,
     options.extensions ?? botanicalAgentExtensions,
-    {
-      recipientStatus:
-        options.recipientStatus ?? (() => Effect.succeed("unknown")),
-      recipientParent: options.recipientParent ?? (() => Effect.succeed(null)),
-      model: {
-        acquire: () =>
-          Effect.succeed({
-            retryable: () => false,
-            model: faux.model,
-            stream: faux.stream,
-            release: Effect.void,
-          }),
-      },
-      tools: {
-        modules: [],
-        sources: [],
-        execution: { timeoutMs: options.timeoutMs ?? 180_000 },
-        sandbox: fromTypedSandbox({
-          execute: async (request) => {
-            offered = Object.keys(request.bindings);
-            const ask = request.bindings.question?.ask;
-            if (ask === undefined)
-              throw new Error("Ask capability is not offered");
-            if (options.priorInput !== undefined) await ask(options.priorInput);
-            const response =
-              options.program === undefined
-                ? await ask(input)
-                : await options.program(request.bindings, request.code);
-            result = response;
-            await options.afterResult?.();
-            return response;
-          },
-        }),
-      },
-    },
+    overrides,
     undefined,
-    options.sender === undefined
+    options.sender === undefined && options.maker === undefined
       ? undefined
       : {
           fanOut: (settlement) =>
@@ -121,6 +131,26 @@ export async function questionHost(
     /** Every settlement the mail room was asked to fan out. */
     settlements,
     park: async () => {
+      if (options.maker !== undefined && host.mail !== undefined) {
+        const { agentId, sessionId, name } = options.maker;
+        const from = { kind: "agent" as const, agentId, sessionId };
+        const meta = { author: { id: agentId, name, kind: "agent" as const } };
+        await Effect.runPromise(
+          host.mail.acceptMail(
+            {
+              key: "mail-start",
+              to: { kind: "agent", agentId: "child", sessionId: "questions" },
+              from,
+              replyTo: [from],
+              content: "Start",
+              createdAt: 1,
+              meta,
+            },
+            meta,
+          ),
+        );
+        await host.drain();
+      }
       if (options.sender !== undefined && host.mail !== undefined) {
         const { agentId, sessionId, name } = options.sender;
         const from = { kind: "agent" as const, agentId, sessionId };

@@ -105,7 +105,7 @@ it("the shared roster sends a mail-sent run's ask to a person", async () => {
   }
 });
 
-it("answers a routed Ask only as the Agent Session it waits on, attributed in the reply", async () => {
+it("answers a routed Ask from any Session of the Agent it waits on, never another Agent, attributed in the reply", async () => {
   const fixture = await questionHost(
     { questions, mode: "continue" },
     { extensions: botanicalExtensionsWithSenderRouting(), sender: scout },
@@ -131,7 +131,11 @@ it("answers a routed Ask only as the Agent Session it waits on, attributed in th
     await expect(questionOf(host).call("list", {})).resolves.toMatchObject({
       asks: [{ askId, status: "parked" }],
     });
-    const sender = { agentId: scout.agentId, sessionId: scout.sessionId };
+    // The Agent restarted into a new Session; custody is the Agent's.
+    const sender = {
+      agentId: scout.agentId,
+      sessionId: "session-shiitake-new",
+    };
     const accepted = {
       result: {
         result: "accepted",
@@ -363,6 +367,58 @@ it.each(["archived", "absent"] as const)(
         ).resolves.toMatchObject({
           asks: [{ escalated: { by: scout, reason: `sender_${gone}` } }],
         });
+      } finally {
+        await fixture.host.close();
+        fixture.store.close();
+        vi.setSystemTime(now);
+      }
+    }
+  },
+);
+
+it.each(["archived", "absent"] as const)(
+  "a made-by Agent's question waits on its maker, and goes to a person once the maker is %s",
+  async (gone) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const now = Date.parse("2026-11-18T12:00:00Z");
+    vi.setSystemTime(now);
+    for (const atCreation of [true, false]) {
+      let status: "present" | "archived" | "absent" = atCreation
+        ? gone
+        : "present";
+      const fixture = await questionHost(
+        { questions, mode: "continue" },
+        {
+          extensions: botanicalExtensionsWithSenderRouting(),
+          // The asking turn is a person's own message, which no mail sent.
+          maker: scout,
+          recipientStatus: () => Effect.promise(() => Promise.resolve(status)),
+        },
+      );
+      try {
+        const { askId } = await fixture.park();
+        if (!atCreation) {
+          expect(
+            (await fixture.host.session("questions").read()).attention,
+          ).toEqual([
+            expect.objectContaining({
+              id: askId,
+              waitingOn: scout,
+              inbox: false,
+            }),
+          ]);
+          status = gone;
+          vi.setSystemTime(now + 900_000);
+          await fixture.host.reconcile();
+        }
+        const [item] = (await fixture.host.session("questions").read())
+          .attention;
+        expect(item).toMatchObject({
+          id: askId,
+          escalated: { by: scout, reason: `sender_${gone}` },
+        });
+        expect(item).not.toHaveProperty("waitingOn");
+        expect(item).not.toHaveProperty("inbox");
       } finally {
         await fixture.host.close();
         fixture.store.close();

@@ -1,5 +1,75 @@
 # Shiitake extensions (`@fungi.computer/shiitake-extensions`)
 
+Shiitake extensions are the built-in abilities of Fungi's agents: asking you
+questions, working toward goals across turns, repeating loops, plans, schedules,
+skills, a home Computer and a list of helper agents.
+
+```mermaid
+flowchart LR
+  Host[Shiitake host] -->|one roster| Extensions[Shiitake extensions]
+  Extensions --> Goal[Goals]
+  Extensions --> Question[Questions]
+  Extensions --> Plans[Plans and schedules]
+  Extensions --> Subagents[Sub-agents and home Computer]
+```
+
+## Quick start
+
+Install it:
+
+```sh
+npm install @fungi.computer/shiitake-extensions
+```
+
+Illustrative: this helper receives an already open Agent with the product roster
+and reads the goal slot for one Session. A fresh Session has no goal value. The
+helper requests neither model work nor a goal mutation.
+
+```ts
+import {
+  bindSessionExtension,
+  type ShiitakeAgent,
+} from "@fungi.computer/shiitake/client";
+import { goalContract } from "@fungi.computer/shiitake-extensions/goal";
+import { botanicalAgentExtensions } from "@fungi.computer/shiitake-extensions/roster";
+
+export const extensions = botanicalAgentExtensions;
+
+export async function readGoal(agent: ShiitakeAgent) {
+  const session = agent.session("example-session");
+  const goal = bindSessionExtension(session, goalContract);
+  return goal.view(await session.read());
+}
+```
+
+The bound view distinguishes `unavailable`, `stopped` with a reason, and
+`running` with a value or `null`. Existing [goal tests](test/goal.test.ts) bind
+that same contract, read observed state, issue commands and close the owner. The
+helper borrows the Agent. Its owner closes it when the host's lifetime ends.
+
+## Common tasks
+
+### Read an Agent's goal
+
+`bindSessionExtension` with `goalContract` reads the goal slot. See the Quick
+start.
+
+### Add the whole roster to a host
+
+See [Core concepts](#core-concepts).
+
+### Understand state and lifetime
+
+See [State and lifetime](#state-and-lifetime).
+
+### Add the Home, Subagents or Schedules extensions
+
+See [Add the host-composed extensions](#add-the-host-composed-extensions).
+
+## Reference
+
+### Overview
+
 The extensions behind Fungi's Agents: questions an Agent asks you, goals it
 pursues across turns, repeating loops, plans, schedules, skills, a home Computer
 and a footer of its sub-agents. Add them to any
@@ -35,46 +105,18 @@ and mark shortened listings; the prompt still lists every admitted skill. The
 Hub uses the shared roster without Skills and adds its own scoped Home
 extension.
 
-## Quick start: read the committed goal
-
-Illustrative: this helper receives an already open Agent with the product roster
-and reads the goal slot for one Session. A fresh Session has no goal value. The
-helper requests neither model work nor a goal mutation.
-
-```ts
-import {
-  bindSessionExtension,
-  type ShiitakeAgent,
-} from "@fungi.computer/shiitake/client";
-import { goalContract } from "@fungi.computer/shiitake-extensions/goal";
-import { botanicalAgentExtensions } from "@fungi.computer/shiitake-extensions/roster";
-
-export const extensions = botanicalAgentExtensions;
-
-export async function readGoal(agent: ShiitakeAgent) {
-  const session = agent.session("example-session");
-  const goal = bindSessionExtension(session, goalContract);
-  return goal.view(await session.read());
-}
-```
-
-The bound view distinguishes `unavailable`, `stopped` with a reason, and
-`running` with a value or `null`. Existing [goal tests](test/goal.test.ts) bind
-that same contract, read observed state, issue commands and close the owner. The
-helper borrows the Agent. Its owner closes it when the host's lifetime ends.
-
 ## Core concepts
 
-| Extension | Ownership and behavior                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Ask       | Up to four open decisions per Session. The model asks or withdraws; humans answer or decline. A live waiter receives the answer; a parked question resumes through one follow-up. On Local, delegated work and extension turns in a delegated Session wait on the parent first, read `waiting on <name>` and report `waiting_on_you`. The exact receiving Session answers with `agents.answer` or bubbles to its own parent with `agents.escalate`; only a root or gone parent reaches a person. Silence never escalates: at most two Local reminders, then quiet waiting. Durable fifteen-minute checks promote only an archived or absent sender, never an unknown one. Asker expiry follows its chosen action. Hub sends every Ask to a person. |
-| Goal      | One live or paused objective per Session. The model creates, reads and completes it through `goal.*` tools, from any later turn of its Session; humans set, pause, resume or clear it. Esc, failed work, a block or three tool-less continuations pause it; a tool-less goal turn while a sub-agent command is live waits instead. Closing the app pauses it only if work stops without resuming; background work and runtime-auto-resumed turns keep it live. An achieved or cleared goal becomes one chat line in its history.                                                                                                                                                                                                                   |
-| Loop      | One repeated prompt per Session. It runs on a fixed cron cadence or lets its own active run request the next occurrence. Commands start, pause, resume and stop it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| Plan      | One checklist per Session. `plan.update_plan` replaces it whole, with at most one step in progress and at most 50 steps; `steps: []` clears it. The human clears it with `/plan clear` or the footer row's Clear plan action, through the same owner. `/plan` opens the full checklist in the footer; updates keep only the current step and progress visible, and a finished or cleared plan leaves the footer while its history stays in state.                                                                                                                                                                                                                                                                                                  |
-| Almanac   | Agent-scope one-shot or recurring schedules. Each schedule targets a Session and tracks admission, retry and its next due time.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| Skills    | Host-supplied, read-only skill discovery. Metadata enters the prompt; `skill.load` reads a skill body or supporting file; `/skills` lists them.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| Home      | Agent-scope choice of an attached Computer. Each run captures its scoped file tools and current attachment choice.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| Subagents | A footer view: one row per Agent this Session sent work to or created, with its live status (working, waiting on an Agent, needs you, idle, failed, unavailable). A row opens that Agent's conversation, a question that needs a person can be answered from its row, and `/agents` collapses the rows to one summary row and expands them again. It owns no relationship and no durable state.                                                                                                                                                                                                                                                                                                                                                    |
+| Extension | Ownership and behavior                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Ask       | Up to four open questions per Session. The agent asks or withdraws a question, and a person answers or declines it. If the asker is still waiting, it gets the answer; if the question was parked, one follow-up message resumes it. On Local, a helper agent's questions go to its parent first, and the parent answers or passes the question up to its own parent. Only a top-level agent, or one whose parent is gone, reaches a person. Silence never escalates: there are at most two reminders on Local, then quiet waiting. A check every fifteen minutes promotes only a sender that is archived or absent, never an unknown one. A question's expiry follows the action it was waiting on. Hub sends every question to a person. The technical names are `agents.answer`, `agents.escalate` and `waiting_on_you`. |
+| Goal      | One live or paused objective per Session. The model creates, reads and completes it through `goal.*` tools, from any later turn of its Session; humans set, pause, resume or clear it. Esc, failed work, a block or three tool-less continuations pause it; a tool-less goal turn while a sub-agent command is live waits instead. Closing the app pauses it only if work stops without resuming; background work and runtime-auto-resumed turns keep it live. An achieved or cleared goal becomes one chat line in its history.                                                                                                                                                                                                                                                                                            |
+| Loop      | One repeated prompt per Session. It runs on a fixed cron cadence or lets its own active run request the next occurrence. Commands start, pause, resume and stop it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Plan      | One checklist per Session. `plan.update_plan` replaces it whole, with at most one step in progress and at most 50 steps; `steps: []` clears it. The human clears it with `/plan clear` or the footer row's Clear plan action, through the same owner. `/plan` opens the full checklist in the footer; updates keep only the current step and progress visible, and a finished or cleared plan leaves the footer while its history stays in state.                                                                                                                                                                                                                                                                                                                                                                           |
+| Almanac   | Agent-scope one-shot or recurring schedules. Each schedule targets a Session and tracks admission, retry and its next due time.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Skills    | Host-supplied, read-only skill discovery. Metadata enters the prompt; `skill.load` reads a skill body or supporting file; `/skills` lists them.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Home      | Agent-scope choice of an attached Computer. Each run captures its scoped file tools and current attachment choice.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Subagents | A footer view: one row per Agent this Session sent work to or created, with its live status (working, waiting on an Agent, needs you, idle, failed, unavailable). A row opens that Agent's conversation, a question that needs a person can be answered from its row, and `/agents` collapses the rows to one summary row and expands them again. It owns no relationship and no durable state.                                                                                                                                                                                                                                                                                                                                                                                                                             |
 
 An active Goal is quiet system context on every run. Continuation instructions
 apply only to runs admitted by Goal with its continuation correlation; human

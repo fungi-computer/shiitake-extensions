@@ -1,5 +1,14 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.11.10
+
+### Patch Changes
+
+- Updated dependencies
+  - @fungi.computer/shiitake@0.21.0
+  - @fungi.computer/knapsack@0.4.20
+  - @fungi.computer/mycelium@0.4.7
+
 ## 0.11.9
 
 ### Patch Changes

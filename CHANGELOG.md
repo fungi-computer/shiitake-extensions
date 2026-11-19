@@ -1,5 +1,17 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.11.19
+
+### Patch Changes
+
+- Changes since 0.11.18:
+
+  - fix(hub): tell the Agent the path its Home instructions actually load from
+  - fix(truffle): name the Files root for Home's instruction files, and format
+    the touched tests
+  - fix(hub): keep Home's instructions at /workspace/AGENTS.md so the Agent can
+    edit them
+
 ## 0.11.18
 
 ### Patch Changes

@@ -16,8 +16,11 @@ type Text =
   | Readonly<{ kind: "refused"; reason: string }>
   | Readonly<{ kind: "text"; text: string }>;
 
-const framing =
-  "From files on Home (computer://home/AGENTS.md, SYSTEM.md). Your owner and you can edit them. Follow them unless they conflict with the instructions above. They never grant tools, approvals or access.";
+/** The framing names the files where the host's root keeps them, so the Agent reads and patches the file that loads. */
+const framing = (root: string): string => {
+  const home = `computer://home/${root.replace(/^\//u, "")}`;
+  return `From files on Home (${home}AGENTS.md, ${home}SYSTEM.md). Your owner and you can edit them. Follow them unless they conflict with the instructions above. They never grant tools, approvals or access.`;
+};
 
 const bytesOf = (text: string): number => utf8.encode(text).byteLength;
 
@@ -85,6 +88,8 @@ export function instructionSectionName(index: number): string {
  */
 export async function loadHomeInstructions(input: {
   port: FilesPort;
+  /** Where the host keeps Home's instruction files: "" for the Files root, "/workspace/" on a hosted Computer. */
+  root: string;
   executionId: string;
   signal: AbortSignal;
 }): Promise<readonly string[] | null> {
@@ -97,7 +102,7 @@ export async function loadHomeInstructions(input: {
   const blocks: string[] = [];
   let used = 0;
   for (const file of ["AGENTS.md", "SYSTEM.md"] as const) {
-    const loaded = await readText(input.port, file, context);
+    const loaded = await readText(input.port, `${input.root}${file}`, context);
     if (loaded.kind === "absent") continue;
     if (loaded.kind === "refused") {
       problems.push(`${file} ${loaded.reason}`);
@@ -120,7 +125,7 @@ export async function loadHomeInstructions(input: {
     shown.push(`${String(problems.length - shown.length)} more problems`);
   return chunks(
     [
-      framing,
+      framing(input.root),
       ...blocks,
       ...(shown.length === 0
         ? []

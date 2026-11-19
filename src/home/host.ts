@@ -58,6 +58,8 @@ export function resolveHome(
 
 /** Agent-scope choice with per-run tools and prompt over one captured table. */
 export function homeExtension(options: {
+  /** Where this host keeps Home's AGENTS.md and SYSTEM.md; "" is the Files root. */
+  instructionsRoot: string;
   computers: {
     /** Read the table inside the synchronous Home choice transaction. */
     read: (context: Readonly<{ sessionId: string }>) => readonly HomeComputer[];
@@ -132,6 +134,7 @@ export function homeExtension(options: {
         // Home's files are read once for this run, after the state transaction.
         return loadHomeInstructions({
           port: selected.port,
+          root: options.instructionsRoot,
           executionId: `home-instructions/${run.workId}`,
           signal: new AbortController().signal,
         }).then((text) => {

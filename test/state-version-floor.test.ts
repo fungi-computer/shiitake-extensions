@@ -24,7 +24,10 @@ it("never declares an extension state version below the last installed release",
   });
   const store = sqliteOwner();
   const host = await openAgent(store.owner, {
-    roster: [...base.roster, homeExtension({ computers: { read: () => [] } })],
+    roster: [
+      ...base.roster,
+      homeExtension({ instructionsRoot: "", computers: { read: () => [] } }),
+    ],
     grants: [...base.grants, homeGrant],
   });
   try {

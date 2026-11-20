@@ -1,5 +1,13 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.12.2
+
+### Patch Changes
+
+- Updated dependencies
+  - @fungi.computer/knapsack@0.4.22
+  - @fungi.computer/shiitake@0.21.13
+
 ## 0.12.1
 
 ### Patch Changes

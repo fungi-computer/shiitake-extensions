@@ -1,6 +1,6 @@
 {
   "name": "@fungi.computer/shiitake-extensions",
-  "version": "0.11.23",
+  "version": "0.12.0",
   "author": "Levi <levi@technomancy.dev>",
   "private": false,
   "description": "Botanical's product Shiitake extensions: goal, loop and Almanac on the generic extension surface",
@@ -9,6 +9,10 @@
     "./almanac": {
       "types": "./dist/almanac/contract.d.ts",
       "import": "./dist/almanac/contract.js"
+    },
+    "./almanac/client": {
+      "types": "./dist/almanac/client.d.ts",
+      "import": "./dist/almanac/client.js"
     },
     "./almanac/host": {
       "types": "./dist/almanac/host.d.ts",

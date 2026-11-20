@@ -4,6 +4,7 @@
   "name": "@fungi.computer/shiitake-extensions",
   "entryPoints": [
     "src/almanac/contract.ts",
+    "src/almanac/client.ts",
     "src/almanac/host.ts",
     "src/question/contract.ts",
     "src/question/client.ts",

@@ -1,5 +1,14 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.12.0
+
+### Minor Changes
+
+- Changes since 0.11.23:
+
+  - fix(almanac): validate footer proof against the public client
+  - feat(almanac): show recurring asks in conversation footers
+
 ## 0.11.23
 
 ### Patch Changes

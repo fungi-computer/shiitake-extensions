@@ -26,3 +26,8 @@ const target = {
   loopId: "loop-a",
 };
 assert.deepEqual(agentScheduleTargetSchema.parse(target), target);
+
+const { default: almanacClient } =
+  await import("@fungi.computer/shiitake-extensions/almanac/client");
+assert.equal(almanacClient.id, "botanical-almanac");
+assert.deepEqual(almanacClient.contribute(undefined).panel, []);

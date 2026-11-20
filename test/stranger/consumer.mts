@@ -52,3 +52,6 @@ import * as entry23 from "@fungi.computer/shiitake-extensions/subagents/host";
 export { entry23 };
 import * as entry24 from "@fungi.computer/shiitake-extensions/subagents/client";
 export { entry24 };
+
+import * as almanacClient from "@fungi.computer/shiitake-extensions/almanac/client";
+export { almanacClient };

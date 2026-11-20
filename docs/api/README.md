@@ -10,6 +10,7 @@
 
 | Module                                                      | Description |
 | ----------------------------------------------------------- | ----------- |
+| [almanac/client](almanac/client.md)                         | -           |
 | [almanac/contract](almanac/contract.md)                     | -           |
 | [almanac/host](almanac/host.md)                             | -           |
 | [goal/client](goal/client.md)                               | -           |

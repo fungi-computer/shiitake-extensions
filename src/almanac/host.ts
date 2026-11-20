@@ -31,7 +31,7 @@ import {
   settled,
 } from "@fungi.computer/almanac";
 import { z } from "zod";
-import { freshRequestId } from "../internal/catalog.js";
+import { catalog, freshRequestId } from "../internal/catalog.js";
 import { nextOccurrence } from "../internal/cron.js";
 import { almanacContract, Schedule } from "./contract.js";
 
@@ -164,6 +164,58 @@ function cancelSchedule(ctx: Context, scheduleId: string): Step<Schedule> {
     yield* ctx.state.schedules.put(next);
     yield* ctx.timers.cancel(schedule.id);
     return next;
+  });
+}
+
+/** The Agent door and Session footer use the same lifecycle transitions. */
+function pauseSchedule(ctx: Context, scheduleId: string): Step<Schedule> {
+  return Effect.gen(function* () {
+    const schedule = yield* requireSchedule(ctx, scheduleId);
+    if (settled(schedule))
+      return yield* Effect.fail(
+        rejected("conflict", "A settled schedule cannot be paused"),
+      );
+    const next = paused(schedule);
+    yield* ctx.state.schedules.put(next);
+    yield* ctx.timers.cancel(schedule.id);
+    return next;
+  });
+}
+
+function resumeSchedule(ctx: Context, scheduleId: string): Step<Schedule> {
+  return Effect.gen(function* () {
+    const schedule = yield* requireSchedule(ctx, scheduleId);
+    if (settled(schedule))
+      return yield* Effect.fail(
+        rejected("conflict", "A settled schedule cannot be resumed"),
+      );
+    const now = yield* Clock.currentTimeMillis;
+    // A human resume is the retry: it clears the failure and skips
+    // recurring occurrences missed while paused.
+    const back = resumed(schedule, now);
+    if (Result.isFailure(back))
+      return yield* Effect.fail(rejected("invalid", back.failure.message));
+    yield* ctx.state.schedules.put(back.success);
+    yield* ctx.timers.set(schedule.id, back.success.nextDueAt);
+    return back.success;
+  });
+}
+
+/** Session controls verify ownership before using the existing Agent transition. */
+function controlSchedule(
+  ctx: Context,
+  sessionId: string,
+  scheduleId: string,
+  transition: (ctx: Context, scheduleId: string) => Step<Schedule>,
+) {
+  return Effect.gen(function* () {
+    const schedule = yield* requireSchedule(ctx, scheduleId);
+    if (schedule.sessionId !== sessionId)
+      return yield* Effect.fail(
+        rejected("not_found", "Schedule does not belong to this conversation"),
+      );
+    yield* transition(ctx, scheduleId);
+    return { type: "done" as const };
   });
 }
 
@@ -367,11 +419,57 @@ function scheduleModule(ctx: Context, sessionId: string): ModuleRegistration {
 /** Botanical's Almanac on Shiitake timers and the one admission door. */
 export const almanacExtension: RosteredExtensionV0 = defineExtension({
   id: almanacContract.id,
-  version: "1.2.0",
+  version: "1.3.0",
 })
   .config(config)
   .state({ version: 1, migrations: {}, collections })
   .define({
+    catalog: catalog([
+      {
+        id: "pauseSchedule",
+        title: "Pause schedule",
+        category: "Conversation",
+        description: "Pause a schedule in this conversation",
+      },
+      {
+        id: "resumeSchedule",
+        title: "Resume schedule",
+        category: "Conversation",
+        description: "Resume a schedule in this conversation",
+      },
+      {
+        id: "cancelSchedule",
+        title: "Cancel schedule",
+        category: "Conversation",
+        description: "Cancel a schedule in this conversation",
+      },
+    ]),
+    projection: {
+      schema: almanacContract.projection.schema,
+      read: (ctx, sessionId) => {
+        const schedules: Schedule[] = [];
+        let more = 0;
+        // Use the existing state index: settled rows never crowd out live work.
+        for (const index of ["active", "paused"]) {
+          let after: string | undefined;
+          do {
+            const page = ctx.state.schedules.peekPage({
+              index,
+              after,
+              limit: 64,
+            });
+            const matching = page.filter(
+              (schedule) => schedule.sessionId === sessionId,
+            );
+            const visible = matching.slice(0, 15 - schedules.length);
+            schedules.push(...visible);
+            more += matching.length - visible.length;
+            after = page.length === 64 ? page.at(-1)?.id : undefined;
+          } while (after !== undefined);
+        }
+        return Option.some({ schedules, more });
+      },
+    },
     prompt: () => Effect.succeed([{ name: "schedule", text: config.idle }]),
     tools: (ctx, { sessionId }) =>
       Effect.succeed(Option.some(scheduleModule(ctx, sessionId))),
@@ -390,37 +488,14 @@ export const almanacExtension: RosteredExtensionV0 = defineExtension({
             after: input.after,
             limit: input.limit ?? 64,
           }),
-        pause: ({ input }) =>
-          Effect.gen(function* () {
-            const schedule = yield* requireSchedule(ctx, input.scheduleId);
-            if (settled(schedule))
-              return yield* Effect.fail(
-                rejected("conflict", "A settled schedule cannot be paused"),
-              );
-            const next = paused(schedule);
-            yield* ctx.state.schedules.put(next);
-            yield* ctx.timers.cancel(schedule.id);
-            return next;
-          }),
-        resume: ({ input }) =>
-          Effect.gen(function* () {
-            const schedule = yield* requireSchedule(ctx, input.scheduleId);
-            if (settled(schedule))
-              return yield* Effect.fail(
-                rejected("conflict", "A settled schedule cannot be resumed"),
-              );
-            const now = yield* Clock.currentTimeMillis;
-            // A human resume is the retry: it clears the failure and skips
-            // recurring occurrences missed while paused.
-            const back = resumed(schedule, now);
-            if (Result.isFailure(back))
-              return yield* Effect.fail(
-                rejected("invalid", back.failure.message),
-              );
-            yield* ctx.state.schedules.put(back.success);
-            yield* ctx.timers.set(schedule.id, back.success.nextDueAt);
-            return back.success;
-          }),
+        pause: ({ input }) => pauseSchedule(ctx, input.scheduleId),
+        resume: ({ input }) => resumeSchedule(ctx, input.scheduleId),
+        pauseSchedule: ({ sessionId, input }) =>
+          controlSchedule(ctx, sessionId, input.scheduleId, pauseSchedule),
+        resumeSchedule: ({ sessionId, input }) =>
+          controlSchedule(ctx, sessionId, input.scheduleId, resumeSchedule),
+        cancelSchedule: ({ sessionId, input }) =>
+          controlSchedule(ctx, sessionId, input.scheduleId, cancelSchedule),
         cancel: ({ input }) => cancelSchedule(ctx, input.scheduleId),
       }),
     },

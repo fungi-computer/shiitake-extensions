@@ -31,7 +31,7 @@ function readAgentSchedulePage(
             timeZone: string;
           } | null;
           nextDueAt: number;
-          state: "active" | "paused" | "cancelled" | "finished";
+          state: "cancelled" | "active" | "paused" | "finished";
           lastCommandId: string | null;
           lastError: string | null;
           attempt: number;
@@ -50,7 +50,7 @@ function readAgentSchedulePage(
             expression: string;
             timeZone: string;
           } | null;
-          state: "active" | "paused" | "cancelled" | "finished" | "failed";
+          state: "cancelled" | "active" | "paused" | "finished" | "failed";
           commandId: string;
           reason: string | null;
           nextDueAt: number | null;
@@ -89,14 +89,14 @@ The caller owns Agent, home and resource authorization and the owner's lifetime.
 `Promise`\<\{ `items`: readonly ( \| \{ `agentId`: `string`; `kind`:
 `"almanac"`; `schedule`: \{ `id`: `string`; `sessionId`: `string`; `prompt`:
 `string`; `cron`: \| \{ `expression`: `string`; `timeZone`: `string`; \} \|
-`null`; `nextDueAt`: `number`; `state`: `"active"` \| `"paused"` \|
-`"cancelled"` \| `"finished"`; `lastCommandId`: `string` \| `null`; `lastError`:
+`null`; `nextDueAt`: `number`; `state`: `"cancelled"` \| `"active"` \|
+`"paused"` \| `"finished"`; `lastCommandId`: `string` \| `null`; `lastError`:
 `string` \| `null`; `attempt`: `number`; \}; \} \| \{ `agentId`: `string`;
 `kind`: `"loop"`; `schedule`: \{ `loopId`: `string`; `origin`: `"human"` \|
 `"model"`; `expiresAt`: `number` \| `null`; `prompt`: `string`; `mode`:
 `"self_paced"` \| `"fixed_interval"`; `cron`: \| \{ `expression`: `string`;
-`timeZone`: `string`; \} \| `null`; `state`: `"active"` \| `"paused"` \|
-`"cancelled"` \| `"finished"` \| `"failed"`; `commandId`: `string`; `reason`:
+`timeZone`: `string`; \} \| `null`; `state`: `"cancelled"` \| `"active"` \|
+`"paused"` \| `"finished"` \| `"failed"`; `commandId`: `string`; `reason`:
 `string` \| `null`; `nextDueAt`: `number` \| `null`; `lastError`: `string` \|
 `null`; `consecutiveFailures`: `number`; `sessionId`: `string`; \}; \})[];
 `next`: \| \{ `agentId`: `string`; `kind`: `"loop"` \| `"almanac"`; `after?`:
@@ -124,7 +124,7 @@ function controlAgentScheduleWithContent(
           timeZone: string;
         } | null;
         nextDueAt: number;
-        state: "active" | "paused" | "cancelled" | "finished";
+        state: "cancelled" | "active" | "paused" | "finished";
         lastCommandId: string | null;
         lastError: string | null;
         attempt: number;
@@ -143,7 +143,7 @@ function controlAgentScheduleWithContent(
           expression: string;
           timeZone: string;
         } | null;
-        state: "active" | "paused" | "cancelled" | "finished" | "failed";
+        state: "cancelled" | "active" | "paused" | "finished" | "failed";
         commandId: string;
         reason: string | null;
         nextDueAt: number | null;
@@ -172,16 +172,16 @@ must already be admitted for target.agentId; this helper grants no authority.
 `Promise`\< \| \{ `agentId`: `string`; `kind`: `"almanac"`; `schedule`: \{ `id`:
 `string`; `sessionId`: `string`; `prompt`: `string`; `cron`: \| \{ `expression`:
 `string`; `timeZone`: `string`; \} \| `null`; `nextDueAt`: `number`; `state`:
-`"active"` \| `"paused"` \| `"cancelled"` \| `"finished"`; `lastCommandId`:
+`"cancelled"` \| `"active"` \| `"paused"` \| `"finished"`; `lastCommandId`:
 `string` \| `null`; `lastError`: `string` \| `null`; `attempt`: `number`; \}; \}
 \| \{ `agentId`: `string`; `kind`: `"loop"`; `schedule`: \{ `loopId`: `string`;
 `origin`: `"human"` \| `"model"`; `expiresAt`: `number` \| `null`; `prompt`:
 `string`; `mode`: `"self_paced"` \| `"fixed_interval"`; `cron`: \| \{
-`expression`: `string`; `timeZone`: `string`; \} \| `null`; `state`: `"active"`
-\| `"paused"` \| `"cancelled"` \| `"finished"` \| `"failed"`; `commandId`:
-`string`; `reason`: `string` \| `null`; `nextDueAt`: `number` \| `null`;
-`lastError`: `string` \| `null`; `consecutiveFailures`: `number`; `sessionId`:
-`string`; \}; \}\>
+`expression`: `string`; `timeZone`: `string`; \} \| `null`; `state`:
+`"cancelled"` \| `"active"` \| `"paused"` \| `"finished"` \| `"failed"`;
+`commandId`: `string`; `reason`: `string` \| `null`; `nextDueAt`: `number` \|
+`null`; `lastError`: `string` \| `null`; `consecutiveFailures`: `number`;
+`sessionId`: `string`; \}; \}\>
 
 ---
 
@@ -197,14 +197,14 @@ function controlAgentSchedule(
       agentId: string;
       kind: "almanac";
       scheduleId: string;
-      state: "active" | "paused" | "cancelled" | "finished";
+      state: "cancelled" | "active" | "paused" | "finished";
     }
   | {
       agentId: string;
       kind: "loop";
       sessionId: string;
       loopId: string;
-      state: "active" | "paused" | "cancelled" | "finished" | "failed";
+      state: "cancelled" | "active" | "paused" | "finished" | "failed";
     }
 >;
 ```
@@ -222,7 +222,7 @@ Control an already-admitted owner; manage-only callers receive no read content.
 #### Returns
 
 `Promise`\< \| \{ `agentId`: `string`; `kind`: `"almanac"`; `scheduleId`:
-`string`; `state`: `"active"` \| `"paused"` \| `"cancelled"` \| `"finished"`; \}
+`string`; `state`: `"cancelled"` \| `"active"` \| `"paused"` \| `"finished"`; \}
 \| \{ `agentId`: `string`; `kind`: `"loop"`; `sessionId`: `string`; `loopId`:
-`string`; `state`: `"active"` \| `"paused"` \| `"cancelled"` \| `"finished"` \|
+`string`; `state`: `"cancelled"` \| `"active"` \| `"paused"` \| `"finished"` \|
 `"failed"`; \}\>

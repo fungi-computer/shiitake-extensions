@@ -1,5 +1,6 @@
 import { ExtensionId } from "@fungi.computer/shiitake/extensions";
 import * as Schema from "effect/Schema";
+import { CatalogStep } from "../internal/catalog.js";
 import { Prompt, SessionId } from "../internal/schedule-fields.js";
 import {
   ScheduleId,
@@ -22,12 +23,47 @@ const ScheduleRef = Schema.Struct({
   scheduleId: ScheduleId,
 });
 
-/** Almanac's contract: agent-scope schedule CRUD, no Session projection. */
+/** A bounded conversation footer, with explicit overflow rather than silent loss. */
+export const AlmanacProjection = Schema.Struct({
+  /** Active and paused schedules addressed to this Session. */
+  schedules: Schema.Array(Schedule).check(Schema.isMaxLength(15)),
+  /** Additional schedules beyond the footer's row budget. */
+  more: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+});
+
+/** Almanac's Agent controls and Session-owned footer. */
 export const almanacContract = {
   /** Stable extension identity. */
   id: ExtensionId.make("botanical-almanac"),
-  /** Agent-scoped schedule operations. */
+  /** Agent operations and ownership-checked Session controls. */
   commands: {
+    /** Pause a schedule belonging to the invoking conversation. */
+    pauseSchedule: {
+      /** A footer cannot control another conversation's schedule. */
+      scope: "session",
+      /** Exact schedule identity. */
+      input: ScheduleRef,
+      /** Complete the advertised human command. */
+      output: CatalogStep,
+    },
+    /** Resume a schedule belonging to the invoking conversation. */
+    resumeSchedule: {
+      /** A footer cannot control another conversation's schedule. */
+      scope: "session",
+      /** Exact schedule identity. */
+      input: ScheduleRef,
+      /** Complete the advertised human command. */
+      output: CatalogStep,
+    },
+    /** Cancel a schedule belonging to the invoking conversation. */
+    cancelSchedule: {
+      /** A footer cannot control another conversation's schedule. */
+      scope: "session",
+      /** Exact schedule identity. */
+      input: ScheduleRef,
+      /** Complete the advertised human command. */
+      output: CatalogStep,
+    },
     /** Create a schedule with one due occurrence. */
     createOneShot: {
       /** The Agent owns the schedule collection. */
@@ -112,6 +148,9 @@ export const almanacContract = {
       output: Schedule,
     },
   },
-  /** Almanac has no Session projection. */
-  projection: null,
+  /** Schedules visible in their originating conversation. */
+  projection: {
+    /** Decoder shared with the footer client. */
+    schema: AlmanacProjection,
+  },
 } as const;

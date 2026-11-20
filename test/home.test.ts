@@ -18,8 +18,7 @@ import {
 import { homeFilesRouting } from "../src/home/routing.js";
 import { openAgent, sqliteOwner } from "./fixtures/host.js";
 
-const instructionPath = (path: string) =>
-  /^(\/workspace\/)?(AGENTS|SYSTEM)\.md$/u.test(path);
+const instructionPath = (path: string) => /^(AGENTS|SYSTEM)\.md$/u.test(path);
 
 /** A Files host's absent path, as the local and Computer hosts report it. */
 function absentPath(path: string): Error {
@@ -106,11 +105,7 @@ function computer(
   return { name, attachmentId: `att_${name}`, port: patch ? patchPort : port };
 }
 
-async function fixture(
-  initial: readonly HomeComputer[],
-  allowed = true,
-  instructionsRoot = "",
-) {
+async function fixture(initial: readonly HomeComputer[], allowed = true) {
   const store = sqliteOwner();
   const faux = fauxModel([]);
   let computers = initial;
@@ -120,7 +115,6 @@ async function fixture(
   const tools: string[][] = [];
   const descriptions: string[] = [];
   const member = homeExtension({
-    instructionsRoot,
     computers: {
       read: () => {
         captures += 1;
@@ -438,7 +432,6 @@ it("keeps the chosen attachment in Agent state across a runtime reopen", async (
     reopened = await openAgent(test.store.owner, {
       roster: [
         homeExtension({
-          instructionsRoot: "",
           computers: { read: () => [computer("a", [])] },
         }),
       ],
@@ -643,33 +636,6 @@ it("puts Home's AGENTS.md and SYSTEM.md after the host text in their own section
       "computer://home/AGENTS.md, computer://home/SYSTEM.md",
     );
     expect(prompt.slice(0, home)).not.toContain("haiku");
-  } finally {
-    await test.close();
-  }
-});
-
-it("reads Home's instruction files from the root the host names, and nowhere else", async () => {
-  const test = await fixture(
-    [
-      computer("a", [], false, {
-        "/workspace/AGENTS.md": "Hosted instructions.",
-        "AGENTS.md": "Stale file at the Files root.",
-      }),
-    ],
-    true,
-    "/workspace/",
-  );
-  try {
-    await test.run();
-    const section = (test.prompts[0] ?? "").slice(
-      (test.prompts[0] ?? "").indexOf(marker),
-    );
-    expect(section).toContain("## AGENTS.md\nHosted instructions.");
-    expect(section).not.toContain("Stale file");
-    // The prompt names the file the loader read, not the Files root.
-    expect(section).toContain(
-      "computer://home/workspace/AGENTS.md, computer://home/workspace/SYSTEM.md",
-    );
   } finally {
     await test.close();
   }

@@ -58,13 +58,19 @@ export function resolveHome(
 
 /** Agent-scope choice with per-run tools and prompt over one captured table. */
 export function homeExtension(options: {
-  /** Where this host keeps Home's AGENTS.md and SYSTEM.md; "" is the Files root. */
-  instructionsRoot: string;
   computers: {
     /** Read the table inside the synchronous Home choice transaction. */
     read: (context: Readonly<{ sessionId: string }>) => readonly HomeComputer[];
     /** Optional host preparation before run-scoped Files capture. */
     prepare?: (context: Readonly<{ sessionId: string }>) => Promise<void>;
+    /**
+     * Host work on the chosen Home just before its instruction files load.
+     * It must not throw: a failure here never stops the run.
+     */
+    chosen?: (
+      home: HomeComputer,
+      context: Readonly<{ sessionId: string }>,
+    ) => Promise<void>;
   };
 }): RosteredExtensionV0 {
   // Core retains one RunIdentity for Files and every prompt request. Weak keys
@@ -132,9 +138,9 @@ export function homeExtension(options: {
           ),
         }).tools;
         // Home's files are read once for this run, after the state transaction.
+        await options.computers.chosen?.(selected, run);
         return loadHomeInstructions({
           port: selected.port,
-          root: options.instructionsRoot,
           executionId: `home-instructions/${run.workId}`,
           signal: new AbortController().signal,
         }).then((text) => {

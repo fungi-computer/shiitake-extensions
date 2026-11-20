@@ -1,5 +1,13 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.11.23
+
+### Patch Changes
+
+- Changes since 0.11.22:
+
+  - fix(computer): resolve an agent's relative file paths from /workspace
+
 ## 0.11.22
 
 ### Patch Changes

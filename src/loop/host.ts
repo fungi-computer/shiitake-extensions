@@ -279,6 +279,16 @@ function settle(ctx: Context, run: SettledRunV0) {
       else yield* arm(ctx, retry, dueAt);
       return yield* ctx.observe(loop.sessionId);
     }
+    // Cancelling a paused loop's tick (Stop all pauses, then stops) keeps the
+    // loop paused; resume runs the cancelled tick again.
+    if (run.outcome === "cancelled" && loop.state === "paused") {
+      yield* commitLoop(ctx, {
+        ...loop,
+        requested: null,
+        nextDueAt: loop.nextDueAt ?? (yield* Clock.currentTimeMillis),
+      });
+      return yield* ctx.observe(loop.sessionId);
+    }
     if (run.outcome !== "completed" || run.terminal !== "completed") {
       yield* ctx.timers.cancel(loop.sessionId);
       yield* commitLoop(ctx, {

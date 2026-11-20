@@ -1,5 +1,18 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.12.3
+
+### Patch Changes
+
+- Changes since 0.12.2:
+
+  - fix(shiitake-extensions): keep a paused loop paused when its tick is
+    cancelled
+
+- @fungi.computer/shiitake@0.21.14
+  - @fungi.computer/knapsack@0.4.23
+  - @fungi.computer/mycelium@0.4.8
+
 ## 0.12.2
 
 ### Patch Changes

@@ -814,6 +814,48 @@ it("does not retry a cancelled tick", async () => {
   }
 });
 
+it("keeps a paused loop paused when its tick is cancelled, and resume runs it again", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const startAt = Date.parse("2026-11-20T09:00:00Z");
+  vi.setSystemTime(startAt);
+  let pause = () => Promise.resolve();
+  const host = await openLoop({
+    model: scriptedModel([
+      // Stop all pauses the loop, then cancels the tick it already started.
+      async () => {
+        await pause();
+        return fauxAssistantMessage("", { stopReason: "aborted" });
+      },
+      fauxAssistantMessage("resumed"),
+    ]),
+  });
+  pause = async () => {
+    await host.loop.call("pause", {});
+  };
+  try {
+    await host.loop.call("startSelfPaced", {
+      prompt: "Check the kiln",
+      requestId: "paused-cancel",
+    });
+    await host.drain();
+    expect(await host.view()).toMatchObject({
+      value: { loop: { state: "paused", nextDueAt: startAt } },
+    });
+    expect(await host.pendingWork()).toEqual({
+      pending: false,
+      nextWakeAt: null,
+    });
+    await expect(host.loop.call("resume", {})).resolves.toMatchObject({
+      state: "active",
+      nextDueAt: startAt,
+    });
+    await host.drain();
+    expect(await host.userPrompts()).toBe(2);
+  } finally {
+    await host.dispose();
+  }
+});
+
 it("offers model loop control in an ordinary run and stops from a foreign-to-loop run", async () => {
   const results: unknown[] = [];
   const host = await openLoop({

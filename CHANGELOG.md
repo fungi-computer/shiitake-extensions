@@ -1,5 +1,19 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.12.8
+
+### Patch Changes
+
+- Changes since 0.12.7:
+
+  - fix(oyster): setup limits cards not questions, allows type-it options, never
+    asks the person's name
+  - fix(shiitake): tell the model never to offer a type-it option
+
+- @fungi.computer/shiitake@0.22.1
+  - @fungi.computer/knapsack@0.4.25
+  - @fungi.computer/mycelium@0.4.10
+
 ## 0.12.7
 
 ### Patch Changes

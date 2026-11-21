@@ -166,6 +166,8 @@ it("lets the model load every goal, loop, plan and question rule with forage.des
       expect(descriptions.get(namespace), `${namespace}: ${rule}`).toContain(
         rule,
       );
+  // An option that lets the person type their own answer is allowed.
+  expect(descriptions.get("question")).not.toContain("let me type it");
 });
 
 it("keeps the full guidance and current state while a goal, plan and loop are live", async () => {

@@ -135,9 +135,9 @@ function summary(view: SubagentsProjection): PanelRow {
       `${String(total)} sub-agent${total === 1 ? "" : "s"}`,
       ...counts,
       ...(view.uncounted > 0 ? [`${String(view.uncounted)} not read`] : []),
-      "/agents shows them",
     ].join(" · "),
     tone,
+    actions: [{ id: "agents", label: "Show agents", input: {} }],
   };
 }
 

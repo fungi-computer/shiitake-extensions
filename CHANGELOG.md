@@ -1,5 +1,23 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.13.0
+
+### Minor Changes
+
+- Changes since 0.12.10:
+
+  - fix(agents): resume setup offers and discover instruction paths
+  - fix(questions): preserve closure causes and explain header limits
+  - fix(agents): finish setup without repeated decisions
+  - feat(grove): reveal spawned agents from the conversation footer
+
+### Patch Changes
+
+- Updated dependencies
+  - @fungi.computer/shiitake@0.22.4
+  - @fungi.computer/knapsack@0.4.27
+  - @fungi.computer/mycelium@0.4.12
+
 ## 0.12.10
 
 ### Patch Changes

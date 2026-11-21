@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 
+import { questionExtension } from "../src/question/host.js";
 import { goalContract } from "../src/goal/contract.js";
 import { goalExtension, goalExtensionFor } from "../src/goal/host.js";
 import type { SubagentSource } from "../src/subagents/host.js";
@@ -2634,4 +2635,153 @@ it("a goal that adopts already-settled work starts its first goal turn, once", a
 it("keeps the extension id agents.status reads the goal slot by", () => {
   // packages/shiitake/src/agent-control.ts reads this slot for a director.
   expect(goalContract.id).toBe("botanical-session-goal");
+});
+
+it("resumes setup after a plain-text name question and waits on the actual name card", async () => {
+  const store = sqliteOwner();
+  const calls: string[] = [];
+  const host = await openAgent(
+    store.owner,
+    grantAll([goalExtension, questionExtension]),
+    {
+      tools: {
+        modules: [],
+        sources: [],
+        sandbox: fromTypedSandbox({
+          execute: async ({ bindings, code }) => {
+            calls.push(code);
+            const createGoal = bindings.goal?.create_goal;
+            const completeGoal = bindings.goal?.update_goal;
+            const ask = bindings.question?.ask;
+            if (!createGoal || !completeGoal || !ask)
+              throw new Error("Missing setup tools");
+            const actions = new Map([
+              [
+                "arm setup",
+                () =>
+                  createGoal({
+                    objective:
+                      "Finish setup: one sample, answered name card, dashboard approval and cleanup. Resume the unfinished checklist.",
+                  }),
+              ],
+              ["sample", () => Promise.resolve({ saved: "first-image.png" })],
+              [
+                "name card",
+                () =>
+                  ask({
+                    questions: [
+                      {
+                        id: "name",
+                        header: "Name",
+                        question: "Choose a name for me",
+                        options: [
+                          {
+                            label: "Keep Shiitake",
+                            description: "Keep my current name.",
+                          },
+                          {
+                            label: "Frame",
+                            description: "Use a creative name.",
+                          },
+                          {
+                            label: "Mosaic",
+                            description: "Use an art-inspired name.",
+                          },
+                        ],
+                      },
+                    ],
+                  }),
+              ],
+              ["dashboard", () => Promise.resolve({ kind: "denied" })],
+              [
+                "finish setup",
+                () =>
+                  completeGoal({
+                    status: "complete",
+                    reason:
+                      "Name answered Keep; dashboard declined; setup progress cleaned up.",
+                  }),
+              ],
+            ]);
+            const action = actions.get(code);
+            if (!action) throw new Error("Unexpected setup action");
+            return action();
+          },
+        }),
+      },
+      model: scriptedModel([
+        fauxAssistantMessage(fauxToolCall("execute", { code: "arm setup" }), {
+          stopReason: "toolUse",
+        }),
+        fauxAssistantMessage(fauxToolCall("execute", { code: "sample" }), {
+          stopReason: "toolUse",
+        }),
+        fauxAssistantMessage(
+          "Your image is saved. Which name would you like me to use?",
+        ),
+        fauxAssistantMessage(fauxToolCall("execute", { code: "name card" }), {
+          stopReason: "toolUse",
+        }),
+        fauxAssistantMessage(fauxToolCall("execute", { code: "dashboard" }), {
+          stopReason: "toolUse",
+        }),
+        fauxAssistantMessage(
+          fauxToolCall("execute", { code: "finish setup" }),
+          { stopReason: "toolUse" },
+        ),
+        fauxAssistantMessage("Setup finished."),
+      ]),
+    },
+  );
+  let running: Promise<void> | undefined;
+  try {
+    const session = host.session("setup");
+    await Effect.runPromise(
+      host.agent.session("setup").send("Make an image for my friends", {
+        requestId: "maker",
+        delivery: "followUp",
+      }),
+    );
+    await host.reconcile();
+    // The plain-text question produced no attention, but the existing goal
+    // automatically admitted the next turn without a person sending a nudge.
+    const ended = await session.read();
+    expect(ended.attention).toEqual([]);
+    expect(ended.pending.prompts).toHaveLength(1);
+    expect(calls).toEqual(["arm setup", "sample"]);
+    running = host.reconcile();
+    await expect
+      .poll(async () => (await session.read()).attention.length)
+      .toBe(1);
+    const parked = await session.read();
+    expect(calls).toEqual(["arm setup", "sample", "name card"]);
+    expect(parked.pending.prompts).toHaveLength(0);
+    const askId = parked.attention[0]?.id;
+    if (askId === undefined) throw new Error("Missing name card");
+    await session.extension("botanical-session-question").call("answer", {
+      askId,
+      requestId: "keep",
+      answers: { name: { selected: ["Keep Shiitake"] } },
+    });
+    await running;
+    await host.drain();
+    expect(calls).toEqual([
+      "arm setup",
+      "sample",
+      "name card",
+      "dashboard",
+      "finish setup",
+    ]);
+    expect((await session.read()).attention).toEqual([]);
+    expect(
+      bindSessionExtension(session, goalContract).view(await session.read()),
+    ).toMatchObject({
+      status: "running",
+      value: { goal: null, ended: [{ outcome: "achieved" }] },
+    });
+  } finally {
+    await host.close();
+    await running;
+    store.close();
+  }
 });

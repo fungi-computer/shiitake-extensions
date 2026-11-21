@@ -133,7 +133,7 @@ it("finds and describes every Ask, goal, loop and plan operation in a normal run
       cause: { kind: "InvalidInput" },
     });
     expect(z.object({ message: z.string() }).parse(refusal).message).toContain(
-      "<=12 characters",
+      "Question header must be at most 12 characters.",
     );
     expect(pathsByQuery.get("question")).toEqual(
       expect.arrayContaining(["question.ask", "question.withdraw"]),

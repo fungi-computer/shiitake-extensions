@@ -34,7 +34,11 @@ import {
   ClosedStatus,
   AnswerFlowInput,
 } from "./contract.js";
-import { advanceAnswerFlow, type FlowInput } from "./answer-flow.js";
+import {
+  advanceAnswerFlow,
+  closedQuestionNotice,
+  type FlowInput,
+} from "./answer-flow.js";
 
 const config = {
   maximumOpen: 4,
@@ -842,7 +846,10 @@ const baseInput = z.strictObject({
     .array(
       z.strictObject({
         id: z.string().min(1).max(32),
-        header: z.string().min(1).max(12),
+        header: z
+          .string()
+          .min(1)
+          .max(12, "Question header must be at most 12 characters."),
         question: z.string().min(1).max(1_000),
         options: z
           .array(
@@ -1019,12 +1026,10 @@ function withdraw(ctx: Context, sessionId: string, askId: string) {
 function answerNotice(result: HumanResult) {
   if (result.result === "accepted")
     return done({ type: "success", message: "Answer sent." });
+  if (result.result === "closed") return closedQuestionNotice(result.status);
   return done({
     type: "info",
-    message:
-      result.result === "closed"
-        ? `Question closed: ${result.status}.`
-        : "That question is no longer available.",
+    message: "That question is no longer available.",
   });
 }
 
@@ -1079,7 +1084,10 @@ function answerQuestion(
       {
         askId: row.askId,
         questions: row.questions,
-        closed: row.status === "settled" || row.pending !== null,
+        closed:
+          row.status === "settled"
+            ? row.outcome.status
+            : (row.pending?.status ?? false),
       },
       input,
     );

@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import { ask, done, freshRequestId } from "../internal/catalog.js";
 import { titleLimit } from "../internal/headline.js";
 import {
+  type ClosedStatus,
   type Answers,
   type AnswerFlowInput,
   type Question,
@@ -92,6 +93,23 @@ function promptQuestion(
   );
 }
 
+const closedMessages = {
+  declined: "That question was declined.",
+  withdrawn: "The Agent withdrew that question.",
+  expired: "That question has expired.",
+  cancelled: "That question was cancelled.",
+  undeliverable: "Your answer could not reach the Agent.",
+} as const;
+
+/** Only an answer committed elsewhere is an ordinary quiet dismissal. */
+export function closedQuestionNotice(
+  status: Schema.Schema.Type<typeof ClosedStatus>,
+): WhistleCatalogStepV1 {
+  return status === "answered"
+    ? { type: "done" }
+    : done({ type: "info", message: closedMessages[status] });
+}
+
 /** What the answer conversation does next for one open Ask. */
 export type AnswerFlowOutcome =
   | Readonly<{ type: "step"; step: WhistleCatalogStepV1 }>
@@ -111,11 +129,14 @@ export function advanceAnswerFlow(
   row: Readonly<{
     askId: string;
     questions: readonly Question[];
-    closed: boolean;
+    closed: false | Schema.Schema.Type<typeof ClosedStatus>;
   }>,
   input: FlowInput,
 ): Effect.Effect<AnswerFlowOutcome, ExtensionCommandError> {
   return Effect.gen(function* () {
+    // Preserve the closing cause while ignoring a stale composer's draft.
+    if (row.closed !== false)
+      return { type: "step" as const, step: closedQuestionNotice(row.closed) };
     const draft =
       "stage" in input
         ? input
@@ -150,14 +171,6 @@ export function advanceAnswerFlow(
           answers,
         };
     }
-    if (row.closed)
-      return {
-        type: "step" as const,
-        step: done({
-          type: "info",
-          message: "That question is already closed.",
-        }),
-      };
     const next = { askId: row.askId, requestId, index, answers };
     const nextQuestion = row.questions[index];
     if (nextQuestion === undefined)

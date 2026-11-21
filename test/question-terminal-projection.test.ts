@@ -48,6 +48,8 @@ it("removes a withdrawn question from the live card projection before its tool s
       )
       .toBe(1);
     const watch = await Effect.runPromise(session.watch());
+    const attention = watch.snapshot.attention[0];
+    if (attention === undefined) throw new Error("Missing question attention");
     closeWatch = watch.close;
     let slots = watch.snapshot.extensions;
     const cards = () =>
@@ -67,6 +69,15 @@ it("removes a withdrawn question from the live card projection before its tool s
     await expect.poll(() => withdrawn).toBe(true);
     await expect.poll(cards, { timeout: 3_000 }).toEqual([]);
     expect(fixture.result()).toBeUndefined();
+    expect(
+      await host
+        .session("questions")
+        .extension("botanical-session-question")
+        .call("answerFlow", { askId: attention.id }),
+    ).toEqual({
+      type: "done",
+      notice: { type: "info", message: "The Agent withdrew that question." },
+    });
   } finally {
     Effect.runSync(Deferred.succeed(withdrawNow, undefined));
     Effect.runSync(Deferred.succeed(finishTool, undefined));
@@ -145,6 +156,21 @@ it.each(["declined", "expired", "cancelled"] as const)(
         await host.drain();
       }
       await expect.poll(cards, { timeout: 3_000 }).toEqual([]);
+      expect(
+        await host
+          .session("questions")
+          .extension("botanical-session-question")
+          .call("answerFlow", { askId: attention.id }),
+      ).toEqual({
+        type: "done",
+        notice: {
+          type: "info",
+          message:
+            outcome === "expired"
+              ? "That question has expired."
+              : `That question was ${outcome}.`,
+        },
+      });
       if (outcome !== "cancelled")
         await expect
           .poll(fixture.result, { timeout: 3_000 })

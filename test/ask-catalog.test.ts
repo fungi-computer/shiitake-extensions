@@ -1,4 +1,5 @@
 import { parseCatalog } from "@fungi.computer/whistle/catalog";
+import * as Effect from "effect/Effect";
 import { expect, it } from "vitest";
 import { questionHost, questions } from "./fixtures/ask.js";
 import { answerThroughCatalog } from "./fixtures/answer-through-catalog.js";
@@ -227,6 +228,93 @@ it("a long Agent question gets a plain title and sits in the body", async () => 
       body: long,
       details: [{ label: "Question", value: long }],
     });
+  } finally {
+    await fixture.host.close();
+    fixture.store.close();
+  }
+});
+
+it.each(["before opening", "between answers", "before submitting"])(
+  "quietly dismisses a card closed elsewhere %s without changing the answer",
+  async (when) => {
+    const first = questions[0];
+    if (first === undefined) throw new Error("Missing fixture question");
+    const fixture = await questionHost({
+      mode: "continue",
+      questions: [...questions, { ...first, id: "backup" }],
+    });
+    try {
+      const { askId } = await fixture.park();
+      const session = fixture.host.session("questions");
+      const extension = session.extension("botanical-session-question");
+      const original = {
+        storage: { selected: ["SQLite"] },
+        backup: { selected: ["SQLite"] },
+      };
+      await extension.call("answer", {
+        askId,
+        requestId: "answered-elsewhere",
+        answers: original,
+      });
+      const input =
+        when === "before opening"
+          ? { askId }
+          : {
+              stage: "decision",
+              askId,
+              requestId: "stale-composer",
+              index: when === "before submitting" ? 1 : 0,
+              answers:
+                when === "before submitting"
+                  ? { storage: { selected: ["PostgreSQL"] } }
+                  : {},
+              answer: { selected: ["PostgreSQL"] },
+            };
+      expect(await extension.call("answerFlow", input)).toEqual({
+        type: "done",
+      });
+      const snapshot = await session.read();
+      expect(snapshot.attention).toEqual([]);
+      expect(snapshot.pending.prompts).toHaveLength(1);
+      expect(snapshot.pending.prompts[0]?.text).not.toContain("PostgreSQL");
+    } finally {
+      await fixture.host.close();
+      fixture.store.close();
+    }
+  },
+);
+
+it("names an undeliverable answer instead of silently completing its card", async () => {
+  const fixture = await questionHost();
+  try {
+    const { askId } = await fixture.park();
+    const session = fixture.host.session("questions");
+    await Effect.runPromise(
+      fixture.host.agent.session("questions").send("Conflicting payload", {
+        requestId: `ask:${askId}`,
+        delivery: "followUp",
+      }),
+    );
+    const extension = session.extension("botanical-session-question");
+    const notice = {
+      type: "done",
+      notice: {
+        type: "info",
+        message: "Your answer could not reach the Agent.",
+      },
+    };
+    expect(
+      await extension.call("answerFlow", {
+        stage: "decision",
+        askId,
+        requestId: "undeliverable-card",
+        index: 0,
+        answers: {},
+        answer: { selected: ["SQLite"] },
+      }),
+    ).toEqual(notice);
+    expect(await extension.call("answerFlow", { askId })).toEqual(notice);
+    expect((await session.read()).pending.prompts).toHaveLength(1);
   } finally {
     await fixture.host.close();
     fixture.store.close();

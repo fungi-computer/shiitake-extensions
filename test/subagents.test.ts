@@ -663,7 +663,8 @@ it("starts the footer collapsed on first projection and /agents expands it, then
   expect(await panel()).toEqual([
     {
       id: "summary",
-      title: "1 sub-agent · 1 working · /agents shows them",
+      actions: [{ id: "agents", label: "Show agents", input: {} }],
+      title: "1 sub-agent · 1 working",
       tone: "running",
     },
   ]);
@@ -672,7 +673,16 @@ it("starts the footer collapsed on first projection and /agents expands it, then
     parent.session("parent"),
     subagentsContract,
   );
-  expect(await agents.call("agents", {})).toEqual({ type: "done" });
+  const action = (await panel())?.[0]?.actions?.[0];
+  expect(action).toEqual({ id: "agents", label: "Show agents", input: {} });
+  expect(
+    await agents.call(
+      "agents",
+      Schema.decodeUnknownSync(subagentsContract.commands.agents.input)(
+        action?.input,
+      ),
+    ),
+  ).toEqual({ type: "done" });
   await settle(parent, "parent", { expanded: true });
   expect((await panel())?.map(({ id }) => id)).toEqual(["agent-worker"]);
 
@@ -681,7 +691,8 @@ it("starts the footer collapsed on first projection and /agents expands it, then
   expect(await panel()).toEqual([
     {
       id: "summary",
-      title: "1 sub-agent · 1 working · /agents shows them",
+      actions: [{ id: "agents", label: "Show agents", input: {} }],
+      title: "1 sub-agent · 1 working",
       tone: "running",
     },
   ]);
@@ -726,7 +737,8 @@ it("a collapsed footer still says a sub-agent needs you, and marks the summary a
   ).toEqual([
     {
       id: "summary",
-      title: "1 sub-agent · 1 needs you · /agents shows them",
+      actions: [{ id: "agents", label: "Show agents", input: {} }],
+      title: "1 sub-agent · 1 needs you",
       tone: "attention",
     },
   ]);
@@ -812,8 +824,8 @@ it("a routed child reads waiting on its parent, calm, and counts apart from need
   expect(subagentsClient.contribute?.(view).panel).toEqual([
     {
       id: "summary",
-      title:
-        "1 sub-agent · 1 waiting on Shiitake · 1 needs you · /agents shows them",
+      actions: [{ id: "agents", label: "Show agents", input: {} }],
+      title: "1 sub-agent · 1 waiting on Shiitake · 1 needs you",
       tone: "attention",
     },
   ]);
@@ -851,7 +863,8 @@ it("a summary with only routed children is not amber", async () => {
   ).toEqual([
     {
       id: "summary",
-      title: "0 sub-agents · 1 waiting on Shiitake · /agents shows them",
+      actions: [{ id: "agents", label: "Show agents", input: {} }],
+      title: "0 sub-agents · 1 waiting on Shiitake",
       tone: "muted",
     },
   ]);

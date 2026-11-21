@@ -130,3 +130,67 @@ it("does not replace a parked pending answer when its expiry timer fires before 
     store.close();
   }
 });
+
+it.each([false, true])(
+  "names the header field and its 12-character limit (expiry: %s)",
+  async (expiry) => {
+    const input = {
+      questions: questions.map((question) => ({
+        ...question,
+        header: "A long header",
+      })),
+      mode: "continue",
+    };
+    const fixture = await questionHost(
+      expiry
+        ? {
+            ...input,
+            onExpire: { afterMinutes: 5, action: "stop" },
+          }
+        : input,
+    );
+    try {
+      await Effect.runPromise(
+        fixture.host.agent.session("questions").send("Choose storage", {
+          requestId: "invalid-header",
+          delivery: "followUp",
+        }),
+      );
+      await fixture.host.drain();
+      const snapshot = await fixture.host.session("questions").read();
+      const text = snapshot.messages
+        .flatMap(({ value }) =>
+          value.role === "toolResult"
+            ? value.content.flatMap((part) =>
+                part.type === "text" ? [part.text] : [],
+              )
+            : [],
+        )
+        .join("\n");
+      expect(text).toContain("Question header must be at most 12 characters.");
+      expect(snapshot.attention).toEqual([]);
+    } finally {
+      await fixture.host.close();
+      fixture.store.close();
+    }
+  },
+);
+
+it("accepts a question header of exactly 12 characters", async () => {
+  const fixture = await questionHost({
+    questions: questions.map((question) => ({
+      ...question,
+      header: "Project plan",
+    })),
+    mode: "continue",
+  });
+  try {
+    const { askId } = await fixture.park();
+    expect(
+      (await fixture.host.session("questions").read()).attention[0]?.id,
+    ).toBe(askId);
+  } finally {
+    await fixture.host.close();
+    fixture.store.close();
+  }
+});

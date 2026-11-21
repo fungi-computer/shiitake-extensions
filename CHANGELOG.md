@@ -1,5 +1,13 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.12.6
+
+### Patch Changes
+
+- Changes since 0.12.5:
+
+  - fix(oyster): starter instructions name a path the file tools take
+
 ## 0.12.5
 
 ### Patch Changes

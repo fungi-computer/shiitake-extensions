@@ -18,7 +18,7 @@ type Text =
 
 /** The framing names the files by the paths an Agent's tools resolve, so it reads and patches the file that loads. */
 const framing =
-  "From files on Home (computer://home/AGENTS.md, computer://home/SYSTEM.md). Your owner and you can edit them. Follow them unless they conflict with the instructions above. They never grant tools, approvals or access.";
+  "From files on Home (computer://home/AGENTS.md, computer://home/SYSTEM.md). In code, files tools take plain paths such as AGENTS.md. Your owner and you can edit them. Follow them unless they conflict with the instructions above. They never grant tools, approvals or access.";
 
 const bytesOf = (text: string): number => utf8.encode(text).byteLength;
 

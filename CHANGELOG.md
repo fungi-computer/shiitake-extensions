@@ -1,5 +1,13 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.13.9
+
+### Patch Changes
+
+- @fungi.computer/knapsack@0.4.29
+  - @fungi.computer/mycelium@0.4.14
+  - @fungi.computer/shiitake@0.22.13
+
 ## 0.13.8
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 {
   "name": "@fungi.computer/shiitake-extensions",
-  "version": "0.13.10",
+  "version": "0.13.11",
   "author": "Levi <levi@technomancy.dev>",
   "private": false,
   "description": "Botanical's product Shiitake extensions: goal, loop and Almanac on the generic extension surface",
@@ -130,11 +130,11 @@
   },
   "dependencies": {
     "@fungi.computer/almanac": "0.2.1",
-    "@fungi.computer/cairn": "0.1.0",
-    "@fungi.computer/knapsack": "0.4.30",
-    "@fungi.computer/mycelium": "0.5.0",
-    "@fungi.computer/shiitake": "0.23.0",
-    "@fungi.computer/watchdog": "0.1.6",
+    "@fungi.computer/cairn": "0.1.1",
+    "@fungi.computer/knapsack": "0.4.31",
+    "@fungi.computer/mycelium": "0.5.1",
+    "@fungi.computer/shiitake": "0.23.1",
+    "@fungi.computer/watchdog": "0.1.7",
     "@fungi.computer/whistle": "0.3.0",
     "effect": "4.0.2",
     "yaml": "2.9.0",
@@ -146,7 +146,7 @@
     "@types/node": "24.13.3",
     "typescript": "5.9.3",
     "vitest": "4.1.11",
-    "@fungi.computer/mule": "0.4.0"
+    "@fungi.computer/mule": "0.4.1"
   },
   "botanical": {
     "role": "package",

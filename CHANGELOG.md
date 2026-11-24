@@ -1,5 +1,18 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.13.11
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+  - @fungi.computer/cairn@0.1.1
+  - @fungi.computer/knapsack@0.4.31
+  - @fungi.computer/mycelium@0.5.1
+  - @fungi.computer/shiitake@0.23.1
+  - @fungi.computer/watchdog@0.1.7
+
 ## 0.13.10
 
 ### Patch Changes

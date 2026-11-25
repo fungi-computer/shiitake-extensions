@@ -20,6 +20,7 @@ import * as Schema from "effect/Schema";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { catalog, done } from "../internal/catalog.js";
+import { toolCall } from "./tool-call.js";
 import {
   questionContract,
   OpenAsk,
@@ -905,7 +906,8 @@ async function waitForResponse(
   invocation: InvocationContext,
 ) {
   for (;;) {
-    const next = await Effect.runPromise(
+    const next = await toolCall(
+      "ask",
       ctx.transact(
         Effect.gen(function* () {
           const found = yield* ctx.state.asks.get(askId);
@@ -914,13 +916,28 @@ async function waitForResponse(
             return { status: "aborted" as const };
           }
           if (Option.isNone(found)) {
+            // A question closed or removed while its call waited is an ordinary
+            // end (withdrawn, answered elsewhere, expired); a thrown defect
+            // would stop the whole extension for the Session.
             const closed = yield* ctx.state.closed.get(askId);
             if (
-              Option.isSome(closed) &&
-              closed.value.outcome.status === "withdrawn"
+              Option.isNone(closed) ||
+              closed.value.outcome.status === "cancelled"
             )
-              return closed.value.outcome;
-            throw new Error("Waiting question disappeared");
+              return { status: "withdrawn" as const };
+            // A follow-up already carries the answer to the Agent; returning
+            // it here too would deliver it twice.
+            if (closed.value.delivery.via === "follow_up")
+              return { status: "parked" as const, askId };
+            // Same bookkeeping as a replayed in-turn answer, so settlement
+            // can acknowledge this tool result.
+            if (
+              closed.value.delivery.via === "in_turn" &&
+              closed.value.delivery.status === "pending" &&
+              invocation.toolCallId !== undefined
+            )
+              yield* recordDelivery(ctx, closed.value, invocation.toolCallId);
+            return closed.value.outcome;
           }
           const row = found.value;
           if (row.pending !== null) {
@@ -1363,7 +1380,8 @@ export function questionExtensionFor(
               output: WithdrawResult,
               execute: async ({ askId }) =>
                 WithdrawResult.parse(
-                  await Effect.runPromise(
+                  await toolCall(
+                    "withdraw",
                     ctx.transact(withdraw(ctx, sessionId, askId)),
                   ),
                 ),
@@ -1374,7 +1392,8 @@ export function questionExtensionFor(
               input,
               output: ToolResult,
               execute: async (value, invocation) => {
-                const created = await Effect.runPromise(
+                const created = await toolCall(
+                  "ask",
                   ctx.transact({
                     prepare: Effect.gen(function* () {
                       const waitingOn = ctx.config.routesToSender

@@ -194,3 +194,101 @@ it("accepts a question header of exactly 12 characters", async () => {
     fixture.store.close();
   }
 });
+
+it("ends a waiting ask whose record vanished without stopping the extension", async () => {
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+  const fixture = await questionHost(undefined, {
+    program: async (bindings) => {
+      const ask = bindings.question?.ask;
+      if (ask === undefined) throw new Error("Missing Ask operation");
+      return ask({ questions });
+    },
+  });
+  const { host, store } = fixture;
+  let running: Promise<void> | undefined;
+  try {
+    await Effect.runPromise(
+      host.agent.session("questions").send("Choose storage", {
+        requestId: "vanished",
+        delivery: "followUp",
+      }),
+    );
+    running = host.reconcile();
+    const session = host.session("questions");
+    await expect
+      .poll(async () => (await session.read()).attention.length)
+      .toBe(1);
+    // The record is gone while its call still waits: a normal end, not a defect.
+    store.owner.sql.exec(
+      "DELETE FROM shiitake_extension_records WHERE extension_id = ? AND collection = 'asks'",
+      "botanical-session-question",
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    await running;
+    expect(fixture.result()).toEqual({ status: "withdrawn" });
+    expect(
+      (await host.extensions.list()).find(
+        ({ id }) => id === "botanical-session-question",
+      )?.status,
+    ).toBe("running");
+  } finally {
+    await Effect.runPromise(host.agent.session("questions").abort);
+    await running;
+    await host.close();
+    store.close();
+  }
+});
+
+it("returns withdrawn and keeps the extension running when settlement closed its waiting ask as cancelled", async () => {
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+  const fixture = await questionHost(undefined, {
+    program: async (bindings) => {
+      const ask = bindings.question?.ask;
+      if (ask === undefined) throw new Error("Missing Ask operation");
+      return ask({ questions });
+    },
+  });
+  const { host, store } = fixture;
+  let running: Promise<void> | undefined;
+  try {
+    await Effect.runPromise(
+      host.agent.session("questions").send("Choose storage", {
+        requestId: "cancelled-wait",
+        delivery: "followUp",
+      }),
+    );
+    running = host.reconcile();
+    const session = host.session("questions");
+    await expect
+      .poll(async () => (await session.read()).attention.length)
+      .toBe(1);
+    const askId = (await session.read()).attention[0]?.id;
+    if (askId === undefined) throw new Error("Expected live Ask");
+    // What settle() commits for a cancelled run while its call still waits:
+    // the ask leaves `asks` and a cancelled record lands in `closed`.
+    store.owner.sql.exec(
+      `UPDATE shiitake_extension_records
+       SET collection = 'closed',
+           value_json = json_set(value_json, '$.status', 'settled',
+             '$.pending', json('null'), '$.runAttemptId', json('null'),
+             '$.outcome', json('{"status":"cancelled"}'),
+             '$.replay', 'none', '$.delivery', json('{"via":"none"}'))
+       WHERE extension_id = ? AND collection = 'asks' AND key = ?`,
+      "botanical-session-question",
+      askId,
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    await running;
+    expect(fixture.result()).toEqual({ status: "withdrawn" });
+    expect(
+      (await host.extensions.list()).find(
+        ({ id }) => id === "botanical-session-question",
+      )?.status,
+    ).toBe("running");
+  } finally {
+    await Effect.runPromise(host.agent.session("questions").abort);
+    await running;
+    await host.close();
+    store.close();
+  }
+});

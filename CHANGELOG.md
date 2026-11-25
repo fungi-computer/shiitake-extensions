@@ -1,5 +1,21 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.13.14
+
+### Patch Changes
+
+- Changes since 0.13.13:
+
+  - fix(shiitake-extensions): park a follow-up answer and test the cancelled and
+    stopped paths
+  - fix(shiitake-extensions): end a vanished waiting question instead of
+    stopping the tool
+
+- Updated dependencies
+  - @fungi.computer/mycelium@0.5.3
+  - @fungi.computer/knapsack@0.4.34
+  - @fungi.computer/shiitake@0.23.4
+
 ## 0.13.13
 
 ### Patch Changes

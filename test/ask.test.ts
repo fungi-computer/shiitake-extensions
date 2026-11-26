@@ -1552,7 +1552,7 @@ it.each(["wait", "continue"] as const)(
   10_000,
 );
 
-it("parks before the Hub default execute deadline, reserving its last minute", async () => {
+it("parks after a short live window, well before the sandbox gate cuts a call at 120 s", async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(Date.parse("2026-10-08T15:00:00Z"));
   let startedAt = 0;
@@ -1581,9 +1581,9 @@ it("parks before the Hub default execute deadline, reserving its last minute", a
       .toBe(1);
     const askId = (await host.session("questions").read()).attention[0]?.id;
     expect(startedAt).toBeGreaterThan(0);
-    vi.setSystemTime(startedAt + 119_000);
+    vi.setSystemTime(startedAt + 89_000);
     expect(fixture.result()).toBeUndefined();
-    vi.setSystemTime(startedAt + 121_000);
+    vi.setSystemTime(startedAt + 91_000);
     await expect
       .poll(fixture.result, { timeout: 3_000 })
       .toEqual({ status: "parked", askId });
@@ -1982,5 +1982,120 @@ it("reuses a parked receipt after an answer commits before the original tool res
     await host.close();
     store.close();
     rmSync(directory, { recursive: true });
+  }
+});
+
+it("asking the same question again in a later turn joins the open ask and never stacks a card or spends the limit", async () => {
+  const fixture = await questionHost(undefined, {
+    program: async (bindings) => {
+      const ask = bindings.question?.ask;
+      if (ask === undefined) throw new Error("Missing Ask operation");
+      return ask({ questions, mode: "continue" });
+    },
+    turns: 5,
+  });
+  const { host, store } = fixture;
+  try {
+    const first = await fixture.park();
+    for (const requestId of ["again-1", "again-2", "again-3", "again-4"]) {
+      await Effect.runPromise(
+        host.agent.session("questions").send("Choose storage", {
+          requestId,
+          delivery: "followUp",
+        }),
+      );
+      await host.drain();
+      // Four later turns, one ask: none was refused as a fifth open question.
+      expect(fixture.result()).toEqual({
+        status: "parked",
+        askId: first.askId,
+      });
+    }
+    expect(
+      (await host.session("questions").read()).attention.map(({ id }) => id),
+    ).toEqual([first.askId]);
+  } finally {
+    await host.close();
+    store.close();
+  }
+});
+
+it("a late ask still parks before the transport's 120 s cut, measured from the execute's start", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(Date.parse("2026-10-08T15:00:00Z"));
+  let startedAt = 0;
+  const fixture = await questionHost(undefined, {
+    program: async (bindings) => {
+      startedAt = Date.now();
+      const ask = bindings.question?.ask;
+      if (ask === undefined) throw new Error("Missing Ask operation");
+      // Earlier work in the script already spent 60 s.
+      vi.setSystemTime(startedAt + 60_000);
+      return ask({ questions });
+    },
+  });
+  const { host, store } = fixture;
+  let running: Promise<void> | undefined;
+  try {
+    await Effect.runPromise(
+      host.agent.session("questions").send("Choose storage", {
+        requestId: "late-ask",
+        delivery: "followUp",
+      }),
+    );
+    running = host.reconcile();
+    await expect
+      .poll(
+        async () => (await host.session("questions").read()).attention.length,
+      )
+      .toBe(1);
+    const askId = (await host.session("questions").read()).attention[0]?.id;
+    vi.setSystemTime(startedAt + 100_000);
+    expect(fixture.result()).toBeUndefined();
+    vi.setSystemTime(startedAt + 111_000);
+    await expect
+      .poll(fixture.result, { timeout: 3_000 })
+      .toEqual({ status: "parked", askId });
+    await running;
+  } finally {
+    await Effect.runPromise(host.agent.session("questions").abort);
+    await running;
+    await host.close();
+    store.close();
+  }
+});
+
+it("the same question with a different expiry action is a different ask and never silently joins", async () => {
+  let action: "stop" | "proceed_with_recommended" = "stop";
+  const fixture = await questionHost(undefined, {
+    program: async (bindings) => {
+      const ask = bindings.question?.ask;
+      if (ask === undefined) throw new Error("Missing Ask operation");
+      return ask({
+        questions: questions.map((question) => ({ ...question })),
+        mode: "continue",
+        onExpire: { afterMinutes: 30, action },
+      });
+    },
+    turns: 2,
+  });
+  const { host, store } = fixture;
+  try {
+    const first = await fixture.park();
+    action = "proceed_with_recommended";
+    await Effect.runPromise(
+      host.agent.session("questions").send("Choose storage", {
+        requestId: "other-action",
+        delivery: "followUp",
+      }),
+    );
+    await host.drain();
+    const second = fixture.result();
+    expect(second).toMatchObject({ status: "parked" });
+    expect(second).not.toEqual({ status: "parked", askId: first.askId });
+    expect((await host.session("questions").read()).attention).toHaveLength(2);
+  } finally {
+    await host.close();
+    store.close();
   }
 });

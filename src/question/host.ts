@@ -43,7 +43,12 @@ import {
 
 const config = {
   maximumOpen: 4,
-  liveWindowMs: 600_000,
+  // A live wait holds one tool call open; the sandbox gate cuts a call at 120 s,
+  // so the wait parks well before that and the answer arrives as a follow-up.
+  liveWindowMs: 90_000,
+  // The sandbox gate cuts a call 120 s after the execute starts, however late
+  // the ask comes, so the live wait never runs past 110 s from that start.
+  transportBoundMs: 110_000,
   // Check presence, never escalate merely because a present Agent took time.
   senderCheckMs: 900_000,
   routesToSender: false,
@@ -51,7 +56,7 @@ const config = {
   guide:
     "Question tools: ask, withdraw. Use question.ask for decisions that need a person's answer. Put the recommended option first; do not add Other, since free text is always available. Use credential tools for secrets. While a question is parked, finish independent work and end the turn.",
   askDescription:
-    "Ask a person one or more questions and wait for the answer; options follow the question module rules. When another Agent sent you this work, your question goes to that Agent first and always parks: end your turn, and its answer arrives as a follow-up.",
+    'Ask a person one or more questions; options follow the question module rules. The call waits up to 90 seconds for the answer, then parks: end your turn and the answer arrives later as a follow-up (mode "continue" parks at once). Asking the same question again joins the open one. When another Agent sent you this work, your question goes to that Agent first and always parks: end your turn, and its answer arrives as a follow-up.',
 };
 const Response = Schema.Union([
   Schema.Struct({ status: Schema.Literal("answered"), answers: Answers }),
@@ -1119,11 +1124,36 @@ function answerQuestion(
   });
 }
 
+/** The question's content alone: the same words asked by a later turn are one question. */
+function contentKey(questions: AskRow["questions"]): string {
+  return JSON.stringify(
+    questions.map((question) => [
+      question.id,
+      question.header,
+      question.question,
+      question.options.map((option) => [option.label, option.description]),
+      question.multiple ?? false,
+    ]),
+  );
+}
+
+/** What an ask does when nobody answers: its action and how long it waits. */
+function expiryKey(row: AskRow): string {
+  return row.expiry === null
+    ? "none"
+    : JSON.stringify([
+        row.expiry.action,
+        Math.round((row.expiry.at - row.createdAt) / 60_000),
+      ]);
+}
+
 function replayQuestion(
   ctx: Context,
   open: readonly AskRow[],
   workId: string,
   digest: string,
+  key: string,
+  expiry: string,
   toolCallId?: string,
 ) {
   return Effect.gen(function* () {
@@ -1137,6 +1167,19 @@ function replayQuestion(
       }
       return { status: "parked" as const, askId: prior.askId };
     }
+    // The same question already open in this Session, asked by an earlier turn,
+    // is that question: join it instead of stacking a second card.
+    const joined = open.find(
+      (row) =>
+        row.workId !== workId &&
+        row.pending === null &&
+        row.waitingOn === undefined &&
+        contentKey(row.questions) === key &&
+        // A different expiry or action is a different decision: it never joins.
+        expiryKey(row) === expiry,
+    );
+    if (joined !== undefined)
+      return { status: "parked" as const, askId: joined.askId };
     const consumed = (yield* ctx.state.closed.page({
       index: digest,
       limit: 1,
@@ -1437,6 +1480,13 @@ export function questionExtensionFor(
                           open,
                           workId,
                           digest,
+                          contentKey(questions),
+                          "onExpire" in value
+                            ? JSON.stringify([
+                                value.onExpire.action,
+                                value.onExpire.afterMinutes,
+                              ])
+                            : "none",
                           invocation.toolCallId,
                         );
                         if (replay !== undefined) return replay;
@@ -1447,6 +1497,13 @@ export function questionExtensionFor(
                             askIds: open.map((row) => row.askId),
                           };
                         const now = yield* Clock.currentTimeMillis;
+                        // The wait ends before the execute deadline and before the
+                        // transport's own cut, which runs from the execute's start.
+                        const transportEnd =
+                          invocation.startedAt === undefined
+                            ? Number.POSITIVE_INFINITY
+                            : invocation.startedAt +
+                              ctx.config.transportBoundMs;
                         const window =
                           invocation.deadlineAt === null
                             ? 0
@@ -1457,6 +1514,7 @@ export function questionExtensionFor(
                                   invocation.deadlineAt -
                                     now -
                                     deadlineReserveMs,
+                                  transportEnd - now,
                                 ),
                               );
                         // The Agent that sent this work answers later; a live wait

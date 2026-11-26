@@ -54,7 +54,7 @@ import {
 
 /** The rules the model follows; the describe page and an active goal's prompt share them. */
 const rules =
-  "You may start a goal yourself when none is current. Before marking complete audit every requirement against evidence; complete only after actual achievement. Block only after the same external impasse for three consecutive goal turns; a blocked goal stays paused until it is resumed. You may complete, block, clear or resume a goal that paused on its own (stalled, blocked or failed work). A goal a person or your delegator paused you may only complete. Only a person, the Agent that delegated this Session or the Agent that made you pauses or clears a live goal, from any of its Sessions; that Agent may resume its own pause with agents.goal. Person controls stay with the person. Use plan.update_plan for multi-step work when available.";
+  "You may start a goal yourself when none is current. Before marking complete audit every requirement against evidence. Block only after the same external impasse for three consecutive goal turns; a blocked goal stays paused until it is resumed. You may complete, block, clear or resume a goal that paused on its own. A goal a person or your delegator paused you may only complete. Only a person, the Agent that delegated this Session or the Agent that made you pauses or clears a live goal, from any of its Sessions; that Agent may resume its own pause with agents.goal. Person controls stay with the person. Use plan.update_plan for multi-step work. Before completing, mark finished plan steps completed and withdraw open questions you no longer need with question.withdraw.";
 
 /** Hashed prose and policy: every constant goal reads comes from here. */
 const config = {

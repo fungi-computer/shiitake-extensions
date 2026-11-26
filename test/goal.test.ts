@@ -627,6 +627,10 @@ it("keeps continuation instructions in model context instead of the visible Goal
     expect(prompts[1]).toContain(
       "If the same external blocker persists for three goal turns, report blocked with a reason.",
     );
+    // The rules shared with the active goal's prompt end with the cleanup duties.
+    expect(prompts[0]).toContain(
+      "Before completing, mark finished plan steps completed and withdraw open questions you no longer need with question.withdraw.",
+    );
     expect(prompts[1]).toContain(
       "Check for progress rather than repeating yourself.",
     );

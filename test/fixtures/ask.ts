@@ -38,6 +38,8 @@ export async function questionHost(
     store?: ReturnType<typeof sqliteOwner>;
     afterResult?: () => Promise<void>;
     timeoutMs?: number;
+    /** How many separate turns the model asks in; each is its own work. */
+    turns?: number;
     codes?: readonly string[];
     /** The Agent Session that sends the asking work as delegated mail. */
     sender?: Readonly<{ agentId: string; sessionId: string; name: string }>;
@@ -56,8 +58,7 @@ export async function questionHost(
 ) {
   const store = options.store ?? sqliteOwner();
   const faux = fauxModel([]);
-  faux.setResponses([
-    ...(options.maker === undefined ? [] : [fauxAssistantMessage("Started.")]),
+  const turn = [
     fauxAssistantMessage(
       (options.codes ?? ["question.ask"]).map((code) =>
         fauxToolCall("execute", { code }),
@@ -67,6 +68,10 @@ export async function questionHost(
       },
     ),
     fauxAssistantMessage("Continuing independent work."),
+  ];
+  faux.setResponses([
+    ...(options.maker === undefined ? [] : [fauxAssistantMessage("Started.")]),
+    ...Array.from({ length: options.turns ?? 1 }, () => turn).flat(),
   ]);
   let result: SandboxValue;
   let offered: string[] = [];

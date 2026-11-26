@@ -1,5 +1,23 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.13.16
+
+### Patch Changes
+
+- Changes since 0.13.15:
+
+  - fix(hub): park a late ask before the transport cut and keep distinct asks
+    apart
+  - fix(hub): shorten the goal plan rule to fit its prompt budget
+  - fix(hub): align fence and goal text with the attachment version
+  - fix(hub): park a waiting question early and stop refusing for other Apps'
+    churn
+
+- Updated dependencies
+  - @fungi.computer/mycelium@0.5.4
+  - @fungi.computer/knapsack@0.4.35
+  - @fungi.computer/shiitake@0.23.6
+
 ## 0.13.15
 
 ### Patch Changes

@@ -1,5 +1,14 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.13.17
+
+### Patch Changes
+
+- Changes since 0.13.16:
+
+  - fix(hub): fence the decided grants instead of a change counter
+  - fix(hub): keep an approval valid through bookkeeping changes
+
 ## 0.13.16
 
 ### Patch Changes

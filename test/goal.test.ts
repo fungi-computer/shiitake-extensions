@@ -629,7 +629,7 @@ it("keeps continuation instructions in model context instead of the visible Goal
     );
     // The rules shared with the active goal's prompt end with the cleanup duties.
     expect(prompts[0]).toContain(
-      "Before completing, mark finished plan steps completed and withdraw open questions you no longer need with question.withdraw.",
+      "Before completing, mark finished plan steps completed, withdraw questions you no longer need with question.withdraw, and wait for any approval you asked for.",
     );
     expect(prompts[1]).toContain(
       "Check for progress rather than repeating yourself.",
@@ -2787,5 +2787,92 @@ it("resumes setup after a plain-text name question and waits on the actual name 
     await host.close();
     await running;
     store.close();
+  }
+});
+
+it("a goal cannot complete while a question waits for a person, and can once it is gone", async () => {
+  const outcomes: string[] = [];
+  const asker = defineExtension({
+    id: ExtensionId.make("test-asker-open"),
+    version: "1.0.0",
+  })
+    .state({ version: 1, migrations: {}, collections: {} })
+    .define({
+      attention: true,
+      commands: {
+        specs: {
+          ask: {
+            scope: "session",
+            input: Schema.Struct({}),
+            output: Schema.Struct({}),
+          },
+          close: {
+            scope: "session",
+            input: Schema.Struct({}),
+            output: Schema.Struct({}),
+          },
+        },
+        handlers: (ctx) => ({
+          ask: ({ sessionId }: { sessionId: string }) =>
+            ctx.attention
+              .set(sessionId, {
+                id: "q",
+                kind: "question",
+                summary: "Add the widget?",
+                since: 1,
+              })
+              .pipe(Effect.as({})),
+          close: ({ sessionId }: { sessionId: string }) =>
+            ctx.attention.clear(sessionId, "q").pipe(Effect.as({})),
+        }),
+      },
+    });
+  const host = await openAgent(
+    sqliteOwner().owner,
+    grantAll([goalExtension, asker]),
+    {
+      tools: updateEveryExecute(
+        { status: "complete", reason: "Everything is done" },
+        outcomes,
+      ),
+      model: scriptedModel([
+        fauxAssistantMessage(fauxToolCall("execute", { code: "done" }), {
+          stopReason: "toolUse",
+        }),
+        fauxAssistantMessage("still waiting"),
+        fauxAssistantMessage(fauxToolCall("execute", { code: "done" }), {
+          stopReason: "toolUse",
+        }),
+        fauxAssistantMessage("finished"),
+      ]),
+    },
+  );
+  try {
+    const session = host.session("garden");
+    await bindSessionExtension(session, goalContract).call("set", {
+      objective: "Add the widget",
+      expectedRevision: null,
+      requestId: "open-question-goal",
+    });
+    await session.extension(asker.manifest.id).call("ask", {});
+    await host.drain();
+    expect(outcomes[0]).toContain("still waiting for a person");
+    expect((await session.read()).extensions[goalContract.id]).toMatchObject({
+      value: { goal: { state: "active" } },
+    });
+    // Once nothing waits, the same completion is accepted.
+    await session.extension(asker.manifest.id).call("close", {});
+    await Effect.runPromise(
+      host.agent.session("garden").send("Go on", {
+        requestId: "go-on",
+        delivery: "followUp",
+      }),
+    );
+    await host.drain();
+    expect(outcomes.some((outcome) => outcome.includes('"complete"'))).toBe(
+      true,
+    );
+  } finally {
+    await host.close();
   }
 });

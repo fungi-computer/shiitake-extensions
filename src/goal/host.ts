@@ -54,7 +54,7 @@ import {
 
 /** The rules the model follows; the describe page and an active goal's prompt share them. */
 const rules =
-  "You may start a goal yourself when none is current. Before marking complete audit every requirement against evidence. Block only after the same external impasse for three consecutive goal turns; a blocked goal stays paused until it is resumed. You may complete, block, clear or resume a goal that paused on its own. A goal a person or your delegator paused you may only complete. Only a person, the Agent that delegated this Session or the Agent that made you pauses or clears a live goal, from any of its Sessions; that Agent may resume its own pause with agents.goal. Person controls stay with the person. Use plan.update_plan for multi-step work. Before completing, mark finished plan steps completed and withdraw open questions you no longer need with question.withdraw.";
+  "You may start a goal yourself when none is current. Before marking complete audit every requirement against evidence. Block only after the same external impasse for three consecutive goal turns; a blocked goal stays paused until it is resumed. You may complete, block, clear or resume a goal that paused on its own. A goal a person or your delegator paused you may only complete. Only a person, the Agent that delegated this Session or the Agent that made you pauses or clears a live goal, from any of its Sessions; that Agent may resume its own pause with agents.goal. Person controls stay with the person. Use plan.update_plan for multi-step work. Before completing, mark finished plan steps completed, withdraw questions you no longer need with question.withdraw, and wait for any approval you asked for.";
 
 /** Hashed prose and policy: every constant goal reads comes from here. */
 const config = {
@@ -799,6 +799,20 @@ function goalModule(
                   reason: decoded,
                 };
               }
+              // A question the Agent asked and a person has yet to answer is
+              // unfinished work: the goal waits for it, or the Agent withdraws it.
+              // Only questions are visible here. An approval parked by the Hub is
+              // not Session attention yet, so for approvals the goal rules alone
+              // ("wait for any approval you asked for") carry the duty.
+              if (
+                status === "complete" &&
+                (yield* ctx.attention.awaitsDecision(sessionId))
+              )
+                return yield* Effect.fail(
+                  conflict(
+                    "A question is still waiting for a person; wait for the answer, or withdraw it with question.withdraw, before completing the goal",
+                  ),
+                );
               // Only a person discards a live goal; the model may clear a paused one.
               if (status === "clear" && goal.state !== "paused")
                 return yield* Effect.fail(

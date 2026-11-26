@@ -1,5 +1,19 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.15.0
+
+### Minor Changes
+
+- Changes since 0.14.0:
+
+  - fix(shiitake): close a cleared goal's plan and baseline older work
+  - feat(shiitake): withdraw asks and tick plan steps when a goal ends
+
+### Patch Changes
+
+- Updated dependencies
+  - @fungi.computer/shiitake@0.24.0
+
 ## 0.14.0
 
 ### Minor Changes

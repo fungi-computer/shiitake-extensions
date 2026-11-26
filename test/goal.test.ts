@@ -19,10 +19,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
+import { z } from "zod";
 
 import { questionExtension } from "../src/question/host.js";
 import { hubApprovalCaller } from "../src/question/contract.js";
 import { goalContract } from "../src/goal/contract.js";
+import { planContract } from "../src/plan/contract.js";
+import { planExtension } from "../src/plan/host.js";
+import { questions } from "./fixtures/ask.js";
 import { goalExtension, goalExtensionFor } from "../src/goal/host.js";
 import type { SubagentSource } from "../src/subagents/host.js";
 import { grantAll, openAgent, sqliteOwner } from "./fixtures/host.js";
@@ -2931,6 +2935,146 @@ it("a goal cannot complete while a Hub-parked approval holds the Session, and ca
     expect(outcomes.some((outcome) => outcome.includes('"complete"'))).toBe(
       true,
     );
+  } finally {
+    await host.close();
+  }
+});
+
+/** A Session with the goal, question and plan extensions and a sandbox that plans, asks or completes by code. */
+async function endingHost(responses: readonly FauxResponse[]) {
+  const store = sqliteOwner();
+  const host = await openAgent(
+    store.owner,
+    grantAll([goalExtension, questionExtension, planExtension]),
+    {
+      model: scriptedModel(responses),
+      tools: {
+        modules: [],
+        sources: [],
+        sandbox: fromTypedSandbox({
+          execute: async (request: SandboxRequest) => {
+            if (request.code === "plan")
+              return await request.bindings.plan?.update_plan?.({
+                steps: [
+                  { step: "Open the widget", status: "in_progress" },
+                  { step: "Ship it", status: "pending" },
+                ],
+              });
+            if (request.code === "complete")
+              return await request.bindings.goal?.update_goal?.({
+                status: "complete",
+                reason: "Everything is done",
+              });
+            return await request.bindings.question?.ask?.({
+              questions,
+              mode: "continue",
+            });
+          },
+        }),
+      },
+    },
+  );
+  const session = host.session("garden");
+  const send = async (text: string, requestId: string) => {
+    await Effect.runPromise(
+      host.agent
+        .session("garden")
+        .send(text, { requestId, delivery: "followUp" }),
+    );
+    await host.drain();
+  };
+  const goal = (input: Record<string, string>) =>
+    bindSessionExtension(session, goalContract).call("goal", input);
+  const asksOpen = async () =>
+    z
+      .object({ asks: z.array(z.unknown()) })
+      .parse(
+        await session.extension("botanical-session-question").call("list", {}),
+      ).asks.length;
+  const steps = async () => {
+    const view = bindSessionExtension(session, planContract).view(
+      await session.read(),
+    );
+    if (view.status !== "running" || view.value === null)
+      throw new Error("Plan projection did not open");
+    return view.value.plan.steps.map(({ status }) => status);
+  };
+  return { store, host, send, goal, asksOpen, steps };
+}
+
+const toolRun = (...codes: string[]) =>
+  fauxAssistantMessage(
+    codes.map((code) => fauxToolCall("execute", { code })),
+    { stopReason: "toolUse" },
+  );
+
+it("when a goal is cleared, its open asks are withdrawn and its plan closed, never marked done", async () => {
+  const { host, send, goal, asksOpen, steps } = await endingHost([
+    toolRun("plan", "ask"),
+    fauxAssistantMessage("working"),
+    fauxAssistantMessage("working on"),
+    fauxAssistantMessage("and on"),
+  ]);
+  try {
+    await send("Set up", "setup-1");
+    expect(await asksOpen()).toBe(1);
+    expect(await steps()).toEqual(["in_progress", "pending"]);
+    // A person ends the goal; the next settled run reconciles it, by code.
+    await goal({ action: "set", objective: "Set up", requestId: "goal-1" });
+    await host.drain();
+    await goal({ action: "clear" });
+    await send("Go on", "go-on-1");
+    expect(await asksOpen()).toBe(0);
+    expect(await steps()).toEqual([]);
+  } finally {
+    await host.close();
+  }
+});
+
+it("when a goal is achieved, its open plan steps are ticked by code", async () => {
+  const { host, send, goal, steps } = await endingHost([
+    toolRun("plan", "complete"),
+    fauxAssistantMessage("finished"),
+    fauxAssistantMessage("done"),
+  ]);
+  try {
+    await goal({ action: "set", objective: "Set up", requestId: "goal-1" });
+    await host.drain();
+    expect(await steps()).toEqual(["completed", "completed"]);
+    await send("Anything else", "after-1");
+    expect(await steps()).toEqual(["completed", "completed"]);
+  } finally {
+    await host.close();
+  }
+});
+
+it("a Session that ended a goal before the baseline existed keeps its open plan and ask", async () => {
+  const { store, host, send, goal, asksOpen, steps } = await endingHost([
+    fauxAssistantMessage("old goal turn"),
+    toolRun("plan", "ask"),
+    fauxAssistantMessage("working"),
+    fauxAssistantMessage("more"),
+  ]);
+  try {
+    await goal({ action: "set", objective: "Old goal", requestId: "goal-0" });
+    await goal({ action: "clear" });
+    await host.drain();
+    await send("Set up", "setup-1");
+    // The stored shape from before the count: no baseline rows at all.
+    store.owner.sql.exec(
+      "DELETE FROM shiitake_extension_records WHERE collection = 'goalEnds'",
+    );
+    expect(await asksOpen()).toBe(1);
+    await send("Go on", "go-on-1");
+    expect(await asksOpen()).toBe(1);
+    expect(await steps()).toEqual(["in_progress", "pending"]);
+    // The first run recorded the baseline; a later ending now acts.
+    const baselines = store.owner.sql
+      .exec(
+        "SELECT key FROM shiitake_extension_records WHERE collection = 'goalEnds'",
+      )
+      .toArray();
+    expect(baselines).toHaveLength(2);
   } finally {
     await host.close();
   }

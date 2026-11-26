@@ -20,6 +20,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { z } from "zod";
 import { catalog, done } from "../internal/catalog.js";
+import { endingSince, goalEndings } from "../internal/goal-ended.js";
 import { Plan, PlanInput, planContract, planIsOpen } from "./contract.js";
 
 /** The rules the model follows; the describe page and an open plan's prompt share them. */
@@ -37,6 +38,11 @@ const config = Object.freeze({
 const collections = {
   history: defineCollection(
     Schema.Struct({ sessionId: Schema.String, history: historySchema(Plan) }),
+    { key: (row) => row.sessionId },
+  ),
+  /** How many ended goals each Session's plan was last settled against. */
+  goalEnds: defineCollection(
+    Schema.Struct({ sessionId: Schema.String, total: Schema.Int }),
     { key: (row) => row.sessionId },
   ),
   plans: defineCollection(
@@ -63,6 +69,15 @@ const input = z
   );
 
 type Context = ExtensionContextV0<typeof collections, typeof config>;
+
+/** Record how many goals had ended when this Session's plan began; only later endings settle it. */
+function baselineGoalEnds(ctx: Context, sessionId: string) {
+  return Effect.gen(function* () {
+    if (Option.isSome(yield* ctx.state.goalEnds.get(sessionId))) return;
+    const { total } = yield* goalEndings(ctx, sessionId);
+    yield* ctx.state.goalEnds.put({ sessionId, total });
+  });
+}
 
 /**
  * The one write: the Agent's tool and the human's clear both replace the
@@ -92,8 +107,47 @@ function replacePlan(
         ),
       });
       yield* ctx.state.plans.put({ sessionId, plan });
+      yield* baselineGoalEnds(ctx, sessionId);
     }
     yield* ctx.observe(sessionId);
+  });
+}
+
+/**
+ * A goal that ended settles its Session's checklist by code, never left to
+ * the model to remember: achieved ticks the open steps, cleared clears it.
+ */
+function settleForEndedGoals(ctx: Context, sessionId: string) {
+  return Effect.gen(function* () {
+    const endings = yield* goalEndings(ctx, sessionId);
+    const { total } = endings;
+    const seen = yield* ctx.state.goalEnds.get(sessionId);
+    const ending = endingSince(
+      Option.isSome(seen) ? seen.value.total : undefined,
+      endings,
+    );
+    if (Option.isNone(seen) || seen.value.total !== total)
+      yield* ctx.state.goalEnds.put({ sessionId, total });
+    // A plan that predates the count is not this goal's to settle.
+    if (ending === "baseline" || ending === undefined) return;
+    const found = yield* ctx.state.plans.get(sessionId);
+    if (Option.isNone(found) || !planIsOpen(found.value.plan)) return;
+    // Only an achieved goal finished its work; a cleared one closes the
+    // checklist without claiming it was done.
+    yield* replacePlan(
+      ctx,
+      sessionId,
+      ending.outcome === "achieved"
+        ? {
+            ...found.value.plan,
+            steps: found.value.plan.steps.map((step) => ({
+              ...step,
+              status: "completed" as const,
+            })),
+          }
+        : { steps: [] },
+      null,
+    );
   });
 }
 
@@ -131,6 +185,14 @@ export const planExtension: RosteredExtensionV0 = defineExtension({
         },
       },
     ]),
+    hooks: {
+      onSettled: (ctx, page) =>
+        Effect.forEach(
+          new Set(page.map((run) => run.sessionId)),
+          (sessionId) => settleForEndedGoals(ctx, sessionId),
+          { discard: true },
+        ),
+    },
     projection: {
       schema: planContract.projection.schema,
       read: (ctx, sessionId) =>

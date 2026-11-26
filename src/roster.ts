@@ -25,8 +25,10 @@ import {
  */
 export const botanicalAgentExtensions: ExtensionRosterV0 = Object.freeze({
   roster: Object.freeze([
-    questionExtension,
+    // The goal settles first: its ending is what the question and plan
+    // extensions after it react to on the same run.
     goalExtension,
+    questionExtension,
     loopExtension,
     almanacExtension,
     planExtension,
@@ -87,7 +89,14 @@ export const botanicalAgentExtensions: ExtensionRosterV0 = Object.freeze({
     },
     {
       id: planContract.id,
-      capabilities: ["state", "run_tools", "projection", "prompt", "commands"],
+      capabilities: [
+        "state",
+        "settled",
+        "run_tools",
+        "projection",
+        "prompt",
+        "commands",
+      ],
     },
   ] as const),
 });

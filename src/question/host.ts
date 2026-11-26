@@ -21,6 +21,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { catalog, done } from "../internal/catalog.js";
 import { toolCall } from "./tool-call.js";
+import { endingSince, goalEndings } from "../internal/goal-ended.js";
 import {
   questionContract,
   OpenAsk,
@@ -175,6 +176,11 @@ const collections = {
       approvalId: Schema.String,
     }),
     { key: (row) => row.id, index: (row) => row.sessionId },
+  ),
+  /** How many ended goals each Session's open asks were last reconciled against. */
+  goalEnds: defineCollection(
+    Schema.Struct({ sessionId: Schema.String, total: Schema.Int }),
+    { key: (row) => row.sessionId, index: () => null },
   ),
   asks: defineCollection(AskRow, {
     key: (row) => row.askId,
@@ -447,6 +453,46 @@ function settle(ctx: Context, run: SettledRunV0) {
         yield* deliverResponse(ctx, row, row.pending);
       else if (row.status === "live") yield* parkAsk(ctx, row);
     }
+  });
+}
+
+/**
+ * A goal that ended leaves no question behind: the asks still open on its
+ * Session are withdrawn by code, never by the model remembering to.
+ */
+/** Record how many goals had ended when this ask opened; only later endings withdraw it. */
+function baselineGoalEnds(ctx: Context, sessionId: string) {
+  return Effect.gen(function* () {
+    if (Option.isSome(yield* ctx.state.goalEnds.get(sessionId))) return;
+    const { total } = yield* goalEndings(ctx, sessionId);
+    yield* ctx.state.goalEnds.put({ sessionId, total });
+  });
+}
+
+function withdrawForEndedGoals(ctx: Context, sessionId: string) {
+  return Effect.gen(function* () {
+    const endings = yield* goalEndings(ctx, sessionId);
+    const { total } = endings;
+    const seen = yield* ctx.state.goalEnds.get(sessionId);
+    const ending = endingSince(
+      Option.isSome(seen) ? seen.value.total : undefined,
+      endings,
+    );
+    if (ending === "baseline") {
+      // Asks that predate the count are not this goal's to withdraw.
+      yield* ctx.state.goalEnds.put({ sessionId, total });
+      return;
+    }
+    if (ending === undefined) return;
+    const open = yield* ctx.state.asks.page({
+      index: sessionId,
+      limit: ctx.config.maximumOpen,
+    });
+    for (const row of open)
+      if (row.pending === null)
+        yield* closeAsk(ctx, row, { status: "withdrawn" });
+    yield* ctx.state.goalEnds.put({ sessionId, total });
+    yield* ctx.observe(sessionId);
   });
 }
 
@@ -1361,7 +1407,14 @@ export function questionExtensionFor(
               )
             : Effect.void,
         onSettled: (ctx, page) =>
-          Effect.forEach(page, (run) => settle(ctx, run), { discard: true }),
+          Effect.forEach(
+            page,
+            (run) =>
+              settle(ctx, run).pipe(
+                Effect.andThen(withdrawForEndedGoals(ctx, run.sessionId)),
+              ),
+            { discard: true },
+          ),
         onTimer: {
           prepare: (ctx, timer) =>
             Effect.gen(function* () {
@@ -1737,6 +1790,7 @@ export function questionExtensionFor(
                             };
                         }
                         yield* ctx.state.asks.put(row);
+                        yield* baselineGoalEnds(ctx, row.sessionId);
                         if (row.expiry !== null)
                           yield* ctx.timers.set(
                             `ask:${row.askId}`,

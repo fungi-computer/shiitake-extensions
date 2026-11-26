@@ -12,25 +12,48 @@ const text = (maximum: number) =>
     Schema.isMaxLength(maximum),
     Schema.isPattern(/\S/u),
   );
+/** The shape rule for a question id; the ask tool's input uses this same one. */
+export const questionIdPattern = /^[a-z][a-z0-9]*(?:[-_.][a-z0-9]+)*$/u;
+/** The bounds on a question set, shared by this contract and the ask tool's input. */
+export const questionLimits = Object.freeze({
+  /** Longest question id, in characters. */
+  idMax: 32,
+  /** Longest header above a question, in characters. */
+  headerMax: 12,
+  /** Longest question text, in characters. */
+  questionMax: 1_000,
+  /** Longest option label, in characters. */
+  labelMax: 60,
+  /** Longest option description, in characters. */
+  descriptionMax: 300,
+  /** Fewest options a question offers. */
+  optionsMin: 2,
+  /** Most options a question offers. */
+  optionsMax: 4,
+  /** Fewest questions in one call. */
+  questionsMin: 1,
+  /** Most questions in one call. */
+  questionsMax: 4,
+});
 /** A decision question: first option is recommended, free text belongs to the host. */
 export const Question = Schema.Struct({
   /** Identity used to associate this question with its answer. */
-  id: text(32).check(Schema.isPattern(/^[a-z][a-z0-9]*(?:[-_.][a-z0-9]+)*$/u)),
+  id: text(questionLimits.idMax).check(Schema.isPattern(questionIdPattern)),
   /** Short label shown above the question. */
-  header: text(12),
+  header: text(questionLimits.headerMax),
   /** Decision presented to the person. */
-  question: text(1_000),
+  question: text(questionLimits.questionMax),
   /** Offered choices, with the recommended choice first. */
   options: Schema.Array(
     Schema.Struct({
       /** Choice label returned in an answer's selection. */
-      label: text(60),
+      label: text(questionLimits.labelMax),
       /** Explanation of the choice's trade-off. */
-      description: text(300),
+      description: text(questionLimits.descriptionMax),
     }),
   ).check(
-    Schema.isMinLength(2),
-    Schema.isMaxLength(4),
+    Schema.isMinLength(questionLimits.optionsMin),
+    Schema.isMaxLength(questionLimits.optionsMax),
     Schema.makeFilter(
       (options) =>
         new Set(options.map((option) => option.label)).size ===
@@ -48,8 +71,8 @@ export const Question = Schema.Struct({
 });
 /** Bounded question set with distinct question identities. */
 export const Questions = Schema.Array(Question).check(
-  Schema.isMinLength(1),
-  Schema.isMaxLength(4),
+  Schema.isMinLength(questionLimits.questionsMin),
+  Schema.isMaxLength(questionLimits.questionsMax),
   Schema.makeFilter(
     (questions) =>
       new Set(questions.map((question) => question.id)).size ===

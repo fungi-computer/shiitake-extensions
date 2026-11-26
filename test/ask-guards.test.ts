@@ -297,3 +297,111 @@ it("returns withdrawn and keeps the extension running when settlement closed its
     store.close();
   }
 });
+
+const option = (label: string) => ({ label, description: `About ${label}` });
+const refusals = [
+  [
+    "an unknown top-level key",
+    { questions, mode: "continue", extra: true },
+    'Unrecognized key: "extra"',
+  ],
+  [
+    "an unknown key beside onExpire",
+    {
+      questions,
+      mode: "continue",
+      onExpire: { afterMinutes: 5, action: "stop" },
+      extra: true,
+    },
+    'Unrecognized key: "extra"',
+  ],
+  [
+    "an unknown key inside onExpire",
+    {
+      questions,
+      mode: "continue",
+      onExpire: { afterMinutes: 5, action: "stop", extra: true },
+    },
+    'Unrecognized key: "extra"',
+  ],
+  [
+    "an unknown key inside a question",
+    {
+      questions: questions.map((question) => ({ ...question, extra: true })),
+      mode: "continue",
+    },
+    'Unrecognized key: "extra"',
+  ],
+  [
+    "an id that breaks the shape rule",
+    {
+      questions: questions.map((question) => ({ ...question, id: "Bad Id" })),
+      mode: "continue",
+    },
+    "Question id must be lowercase letters and digits starting with a letter",
+  ],
+  [
+    "a blank header",
+    {
+      questions: questions.map((question) => ({ ...question, header: " " })),
+      mode: "continue",
+    },
+    "Question header must not be blank.",
+  ],
+  [
+    "repeated option labels",
+    {
+      questions: questions.map((question) => ({
+        ...question,
+        options: [option("Same"), option("Same")],
+      })),
+      mode: "continue",
+    },
+    "Option labels must be unique within a question.",
+  ],
+  [
+    "repeated question ids",
+    { questions: [...questions, ...questions], mode: "continue" },
+    "Question ids must be unique within a call.",
+  ],
+  [
+    "an expiry under five minutes",
+    {
+      questions,
+      mode: "continue",
+      onExpire: { afterMinutes: 4, action: "stop" },
+    },
+    "afterMinutes",
+  ],
+] as const;
+it.each(refusals)(
+  "tells the Agent why it refused %s",
+  async (_name, input, message) => {
+    const fixture = await questionHost(input);
+    try {
+      await Effect.runPromise(
+        fixture.host.agent.session("questions").send("Choose storage", {
+          requestId: "refused-input",
+          delivery: "followUp",
+        }),
+      );
+      await fixture.host.drain();
+      const snapshot = await fixture.host.session("questions").read();
+      const text = snapshot.messages
+        .flatMap(({ value }) =>
+          value.role === "toolResult"
+            ? value.content.flatMap((part) =>
+                part.type === "text" ? [part.text] : [],
+              )
+            : [],
+        )
+        .join("\n");
+      expect(text).toContain(message);
+      expect(text).not.toContain("Invalid input");
+      expect(snapshot.attention).toEqual([]);
+    } finally {
+      await fixture.host.close();
+      fixture.store.close();
+    }
+  },
+);

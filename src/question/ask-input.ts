@@ -1,33 +1,40 @@
 import { z } from "zod";
+import { questionIdPattern, questionLimits } from "./contract.js";
 
 // Mycelium's maintained operation interface uses Zod. The owner additionally
 // decodes Questions for shared domain refinements and durable state.
+/** The ask tool's own input contract: one strict object, so an unknown key names its path. */
 const visible = /\S/u;
-const baseInput = z.strictObject({
+export const questionAskInput = z.strictObject({
   questions: z
     .array(
       z.strictObject({
         id: z
           .string()
           .min(1)
-          .max(32)
+          .max(questionLimits.idMax)
           .regex(
-            /^[a-z][a-z0-9]*(?:[-_.][a-z0-9]+)*$/u,
+            questionIdPattern,
             "Question id must be lowercase letters and digits starting with a letter, words joined by - _ or . (for example setup_interview).",
           )
           .describe(
-            "Lowercase letters and digits, starting with a letter, words joined by - _ or . (at most 32).",
+            `Lowercase letters and digits, starting with a letter, words joined by - _ or . (at most ${String(questionLimits.idMax)}).`,
           ),
         header: z
           .string()
           .min(1)
-          .max(12, "Question header must be at most 12 characters.")
+          .max(
+            questionLimits.headerMax,
+            `Question header must be at most ${String(questionLimits.headerMax)} characters.`,
+          )
           .regex(visible, "Question header must not be blank.")
-          .describe("Short label above the question, at most 12 characters."),
+          .describe(
+            `Short label above the question, at most ${String(questionLimits.headerMax)} characters.`,
+          ),
         question: z
           .string()
           .min(1)
-          .max(1_000)
+          .max(questionLimits.questionMax)
           .regex(visible, "Question text must not be blank."),
         options: z
           .array(
@@ -35,17 +42,17 @@ const baseInput = z.strictObject({
               label: z
                 .string()
                 .min(1)
-                .max(60)
+                .max(questionLimits.labelMax)
                 .regex(visible, "Option label must not be blank."),
               description: z
                 .string()
                 .min(1)
-                .max(300)
+                .max(questionLimits.descriptionMax)
                 .regex(visible, "Option description must not be blank."),
             }),
           )
-          .min(2)
-          .max(4)
+          .min(questionLimits.optionsMin)
+          .max(questionLimits.optionsMax)
           .refine(
             (options) =>
               new Set(options.map((option) => option.label)).size ===
@@ -55,8 +62,8 @@ const baseInput = z.strictObject({
         multiple: z.boolean().default(false),
       }),
     )
-    .min(1)
-    .max(4)
+    .min(questionLimits.questionsMin)
+    .max(questionLimits.questionsMax)
     .refine(
       (questions) =>
         new Set(questions.map((question) => question.id)).size ===
@@ -64,18 +71,14 @@ const baseInput = z.strictObject({
       "Question ids must be unique within a call.",
     ),
   mode: z.enum(["wait", "continue"]).default("wait"),
-});
-/** The ask tool's own input contract: strict objects, the id rule, the limits. */
-export const questionAskInput = z.union([
-  baseInput.extend({
-    onExpire: z.strictObject({
+  onExpire: z
+    .strictObject({
       afterMinutes: z
         .number()
         .int()
         .min(5)
         .max(7 * 24 * 60),
       action: z.enum(["stop", "proceed_with_recommended"]),
-    }),
-  }),
-  baseInput,
-]);
+    })
+    .optional(),
+});

@@ -1,5 +1,14 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.15.6
+
+### Patch Changes
+
+- Changes since 0.15.5:
+
+  - fix(question): one strict ask input, shared id rule and limits, named
+    refusals
+
 ## 0.15.5
 
 ### Patch Changes

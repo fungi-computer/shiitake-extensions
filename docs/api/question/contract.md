@@ -100,6 +100,36 @@ Decoded result of passing an Ask on.
 
 ## Variables
 
+### questionIdPattern
+
+```ts
+const questionIdPattern: RegExp;
+```
+
+The shape rule for a question id; the ask tool's input uses this same one.
+
+---
+
+### questionLimits
+
+```ts
+const questionLimits: Readonly<{
+  idMax: 32;
+  headerMax: 12;
+  questionMax: 1000;
+  labelMax: 60;
+  descriptionMax: 300;
+  optionsMin: 2;
+  optionsMax: 4;
+  questionsMin: 1;
+  questionsMax: 4;
+}>;
+```
+
+The bounds on a question set, shared by this contract and the ask tool's input.
+
+---
+
 ### Question
 
 ```ts

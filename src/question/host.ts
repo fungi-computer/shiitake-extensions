@@ -1668,7 +1668,7 @@ export function questionExtensionFor(
                           workId,
                           digest,
                           contentKey(questions),
-                          "onExpire" in value
+                          value.onExpire !== undefined
                             ? JSON.stringify([
                                 value.onExpire.action,
                                 value.onExpire.afterMinutes,
@@ -1733,7 +1733,7 @@ export function questionExtensionFor(
                           createdAt: now,
                           toolCallId: invocation.toolCallId,
                           expiry:
-                            "onExpire" in value
+                            value.onExpire !== undefined
                               ? {
                                   at:
                                     now + value.onExpire.afterMinutes * 60_000,

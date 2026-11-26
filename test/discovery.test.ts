@@ -203,8 +203,13 @@ it("finds and describes every Ask, goal, loop and plan operation in a normal run
         },
       },
     };
+    // One strict object whose optional onExpire is a property, not a variant.
     expect(inputSchemas.get("question.ask")).toMatchObject({
-      anyOf: [questionSchema, questionSchema],
+      ...questionSchema,
+      properties: {
+        ...questionSchema.properties,
+        onExpire: { properties: { afterMinutes: { minimum: 5 } } },
+      },
     });
     expect(inputSchemas.get("question.withdraw")).toMatchObject({
       properties: { askId: { maxLength: 256 } },

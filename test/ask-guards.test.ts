@@ -52,6 +52,11 @@ it.each(["second answer", "withdraw", "extra answer key"] as const)(
         }),
       ).toEqual({ result: "accepted", via: "in_turn" });
       expect(fixture.result()).toBeUndefined();
+      // The answer went back as the asking call's result, so the closed outcome
+      // names that call for a client to show the answer where it stands.
+      await expect
+        .poll(async () => JSON.stringify(await command.call("list", {})))
+        .toContain('"toolCallId":"tool:');
       if (race === "second answer")
         expect(
           await command.call("answer", {

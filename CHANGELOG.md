@@ -1,5 +1,23 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.15.4
+
+### Patch Changes
+
+- Changes since 0.15.3:
+
+  - fix(parakeet): keep a replaced group's id for the answer and type the
+    question lines by the protocol
+  - fix(parakeet): only the person's own answer is their bubble, and a parked
+    answer shows once
+  - fix(parakeet): focus the card with nothing picked and show the answer as the
+    person's words
+  - fix(parakeet): a question card takes the keys at once and the answer shows
+    as the person's message
+
+- Updated dependencies
+  - @fungi.computer/shiitake@0.24.4
+
 ## 0.15.3
 
 ### Patch Changes

@@ -1,3 +1,4 @@
+import type { ClientDescribedLineV1 } from "@fungi.computer/shiitake/client-entry";
 import type { AskProjection, ClosedOutcome } from "./contract.js";
 
 function wording(answers: NonNullable<ClosedOutcome["answers"]>): string {
@@ -11,17 +12,25 @@ function wording(answers: NonNullable<ClosedOutcome["answers"]>): string {
     .join(" · ");
 }
 
-/** The person's own words for one outcome. */
-function describeOutcome(outcome: ClosedOutcome): string {
+/** A line for the timeline, and whether the person said it themselves. */
+type OutcomeLine = Readonly<{ text: string; own: boolean }>;
+
+/** One outcome in words; only the person's own answer is theirs to have said. */
+function describeOutcome(outcome: ClosedOutcome): OutcomeLine {
   const said = wording(outcome.answers ?? {});
-  if (outcome.status === "declined") return "You declined the question";
+  if (outcome.status === "declined")
+    return { text: "You declined the question", own: false };
   if (outcome.status === "expired")
-    return outcome.action === "proceed_with_recommended"
-      ? `Nobody answered in time, so it went with: ${said}`
-      : "Nobody answered in time, so nothing was decided";
+    return {
+      text:
+        outcome.action === "proceed_with_recommended"
+          ? `Nobody answered in time, so it went with: ${said}`
+          : "Nobody answered in time, so nothing was decided",
+      own: false,
+    };
   return outcome.answeredBy === undefined
-    ? `You chose: ${said}`
-    : `An Agent answered: ${said}`;
+    ? { text: said, own: true }
+    : { text: `An Agent answered: ${said}`, own: false };
 }
 
 /**
@@ -34,10 +43,27 @@ function describeOutcome(outcome: ClosedOutcome): string {
 export function questionOutcomeLine(
   projection: typeof AskProjection.Type | null,
   correlation: string | null,
-): string | undefined {
+): ClientDescribedLineV1 | undefined {
   if (correlation === null) return undefined;
   const closed = projection?.closed;
   if (closed === undefined) return undefined;
   const outcome = closed.find((entry) => entry.askId === correlation);
-  return outcome === undefined ? "Question closed" : describeOutcome(outcome);
+  return outcome === undefined
+    ? { text: "Question closed", own: false }
+    : describeOutcome(outcome);
+}
+
+/**
+ * The person's answer to the question a tool call asked, in their own words,
+ * from the question extension's projection. Undefined until that ask closed,
+ * or for a call that asked nothing.
+ */
+export function questionToolCallLine(
+  projection: typeof AskProjection.Type | null,
+  toolCallId: string,
+): ClientDescribedLineV1 | undefined {
+  const outcome = projection?.closed?.find(
+    (entry) => entry.toolCallId === toolCallId,
+  );
+  return outcome === undefined ? undefined : describeOutcome(outcome);
 }

@@ -259,7 +259,12 @@ function closeAsk(
             : { via: "none" },
     });
     if (toolCallId !== undefined) yield* recordDelivery(ctx, row, toolCallId);
-    yield* rememberOutcome(ctx, row, outcome);
+    yield* rememberOutcome(
+      ctx,
+      row,
+      outcome,
+      followUpWorkId === null ? toolCallId : undefined,
+    );
     yield* ctx.state.asks.remove(row.askId);
     if (row.expiry !== null) yield* ctx.timers.cancel(`ask:${row.askId}`);
     if (row.waitingOn !== undefined)
@@ -277,6 +282,7 @@ function rememberOutcome(
   ctx: Context,
   row: AskRow,
   outcome: Schema.Schema.Type<typeof Outcome>,
+  deliveredBy: string | undefined,
 ) {
   return Effect.gen(function* () {
     if (
@@ -289,6 +295,10 @@ function rememberOutcome(
       askId: row.askId,
       status: outcome.status,
     };
+    // Only an answer that went back as the tool call's result carries the call;
+    // one that reached the Agent as a follow-up message shows at that message.
+    if (deliveredBy !== undefined)
+      Object.assign(remembered, { toolCallId: deliveredBy });
     if ("answers" in outcome)
       Object.assign(remembered, {
         answers: Object.fromEntries(

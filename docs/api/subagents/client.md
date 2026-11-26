@@ -19,7 +19,8 @@ default: Readonly<{
   promptPresentation?: "footer";
   attach?: (context) => Effect<void, Error, Scope>;
   contribute?: (slot) => object;
-  describeMessage?: (origin, slot) => string | undefined;
+  describeMessage?: (origin, slot) => ClientDescribedLineV1 | undefined;
+  describeToolCall?: (toolCallId, slot) => ClientDescribedLineV1 | undefined;
 }>;
 ```
 

@@ -185,6 +185,12 @@ export const AnsweredBy = Schema.Struct({
 export const ClosedOutcome = Schema.Struct({
   /** Identity of the ask; the follow-up message's origin correlation names it. */
   askId: Schema.String,
+  /**
+   * The tool call whose result carried this answer back to the Agent, so a
+   * client can show the answer where the call stands. Absent when the answer
+   * reached the Agent as a follow-up message instead.
+   */
+  toolCallId: Schema.optionalKey(Schema.String),
   /** How the ask ended. */
   status: Schema.Literals(["answered", "declined", "expired"]),
   /** The answers, as given or as the expiry default applied them. */

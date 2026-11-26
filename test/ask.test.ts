@@ -206,6 +206,8 @@ it("a person may always answer a routed Ask", async () => {
       closed: [
         {
           askId,
+          // Parked: the answer reached the Agent as a follow-up message, so it
+          // names no tool call and shows once, at that message.
           status: "answered",
           answers: { storage: { selected: ["SQLite"] } },
         },

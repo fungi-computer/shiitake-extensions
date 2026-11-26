@@ -19,6 +19,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { questionAskInput } from "./ask-input.js";
 import { catalog, done } from "../internal/catalog.js";
 import { toolCall } from "./tool-call.js";
 import { endingSince, goalEndings } from "../internal/goal-ended.js";
@@ -60,7 +61,7 @@ const config = {
   guide:
     "Question tools: ask, withdraw. Use question.ask for decisions that need a person's answer. Put the recommended option first; do not add Other, since free text is always available. Use credential tools for secrets. While a question is parked, finish independent work and end the turn.",
   askDescription:
-    'Ask a person one or more questions; options follow the question module rules. The call waits up to 90 seconds for the answer, then parks: end your turn and the answer arrives later as a follow-up (mode "continue" parks at once). Asking the same question again joins the open one. When another Agent sent you this work, your question goes to that Agent first and always parks: end your turn, and its answer arrives as a follow-up.',
+    'Ask a person one or more questions; options follow the question module rules. Limits: 1 to 4 questions with distinct ids; each has an id (lowercase letters and digits, starting with a letter, words joined by - _ or ., at most 32 characters), a header (a short label, at most 12 characters), a question (at most 1000), and 2 to 4 options with distinct labels, each a label (at most 60) and a description (at most 300). No text may be blank. The call waits up to 90 seconds for the answer, then parks: end your turn and the answer arrives later as a follow-up (mode "continue" parks at once). Asking the same question again joins the open one. When another Agent sent you this work, your question goes to that Agent first and always parks: end your turn, and its answer arrives as a follow-up.',
 };
 const Response = Schema.Union([
   Schema.Struct({ status: Schema.Literal("answered"), answers: Answers }),
@@ -1004,48 +1005,6 @@ function escalateFromAgent(
   });
 }
 
-// Mycelium's maintained operation interface uses Zod. The owner additionally
-// decodes Questions for shared domain refinements and durable state.
-const baseInput = z.strictObject({
-  questions: z
-    .array(
-      z.strictObject({
-        id: z.string().min(1).max(32),
-        header: z
-          .string()
-          .min(1)
-          .max(12, "Question header must be at most 12 characters."),
-        question: z.string().min(1).max(1_000),
-        options: z
-          .array(
-            z.strictObject({
-              label: z.string().min(1).max(60),
-              description: z.string().min(1).max(300),
-            }),
-          )
-          .min(2)
-          .max(4),
-        multiple: z.boolean().default(false),
-      }),
-    )
-    .min(1)
-    .max(4),
-  mode: z.enum(["wait", "continue"]).default("wait"),
-});
-const input = z.union([
-  baseInput.extend({
-    onExpire: z.strictObject({
-      afterMinutes: z
-        .number()
-        .int()
-        .min(5)
-        .max(7 * 24 * 60),
-      action: z.enum(["stop", "proceed_with_recommended"]),
-    }),
-  }),
-  baseInput,
-]);
-
 const deadlineReserveMs = 60_000;
 const pollIntervalMs = 1_000;
 
@@ -1660,7 +1619,7 @@ export function questionExtensionFor(
             ask: Mycelium.operation({
               replay: "unsafe",
               description: ctx.config.askDescription,
-              input,
+              input: questionAskInput,
               output: ToolResult,
               execute: async (value, invocation) => {
                 const created = await toolCall(

@@ -1,5 +1,21 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.13.18
+
+### Patch Changes
+
+- Changes since 0.13.17:
+
+  - fix(shiitake-extensions): keep the outcome wording private
+  - fix(shiitake): let a client entry describe its extension's own messages
+  - fix(parakeet): leave messages alone without outcomes and show the TUI row
+    compactly
+  - fix(parakeet): show answers from the question's own outcome and tie a card
+    to its call
+
+- Updated dependencies
+  - @fungi.computer/shiitake@0.23.7
+
 ## 0.13.17
 
 ### Patch Changes

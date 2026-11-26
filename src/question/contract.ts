@@ -76,6 +76,11 @@ export const OpenAsk = Schema.Struct({
   waitingOn: Schema.optionalKey(AttentionRecipientSchema),
   /** Latest explicit escalation or evidence that the waiting Agent is gone. */
   escalated: Schema.optionalKey(AttentionEscalationSchema),
+  /**
+   * The tool call that asked, so a client can tell which call is waiting on
+   * this card. Absent when the host did not name the call.
+   */
+  toolCallId: Schema.optionalKey(Schema.String),
   /** Decisions awaiting the person's answers. */
   questions: Questions,
   /** Whether the ask is live in a turn or parked for later. */
@@ -87,12 +92,6 @@ export const OpenAsk = Schema.Struct({
 });
 /** One live or parked ask visible to Session clients. */
 export type OpenAsk = Schema.Schema.Type<typeof OpenAsk>;
-/** Bounded set of open asks projected into the Session. */
-export const AskProjection = Schema.Struct({
-  /** Currently visible live and parked asks. */
-  asks: Schema.Array(OpenAsk).check(Schema.isMaxLength(4)),
-});
-
 /** Stable identity for a human command and its retry. */
 export const RequestId = text(256);
 /** Answers keyed by question id, with selected choices and optional free text. */
@@ -182,6 +181,39 @@ export const AnsweredBy = Schema.Struct({
   agentId: text(256),
 });
 
+/** What a closed ask resolved to, kept for the person's timeline. */
+export const ClosedOutcome = Schema.Struct({
+  /** Identity of the ask; the follow-up message's origin correlation names it. */
+  askId: Schema.String,
+  /** How the ask ended. */
+  status: Schema.Literals(["answered", "declined", "expired"]),
+  /** The answers, as given or as the expiry default applied them. */
+  answers: Schema.optionalKey(Answers),
+  /** Set when an Agent, not a person, gave the answers. */
+  answeredBy: Schema.optionalKey(AnsweredBy),
+  /** Expiry only: stop, or carry on with the recommended answers. */
+  action: Schema.optionalKey(
+    Schema.Literals(["stop", "proceed_with_recommended"]),
+  ),
+});
+/** One decoded closed outcome. */
+export type ClosedOutcome = Schema.Schema.Type<typeof ClosedOutcome>;
+/** The most recent outcomes kept per Session. */
+export const recentOutcomeLimit = 8;
+/** Bounded set of open asks, and recent outcomes, projected into the Session. */
+export const AskProjection = Schema.Struct({
+  /** Currently visible live and parked asks. */
+  asks: Schema.Array(OpenAsk).check(Schema.isMaxLength(4)),
+  /**
+   * Recent outcomes, newest first, for clients that show what was answered.
+   * A Session's owner and its clients ship separately, so a client treats an
+   * absent list as none.
+   */
+  closed: Schema.optionalKey(
+    Schema.Array(ClosedOutcome).check(Schema.isMaxLength(recentOutcomeLimit)),
+  ),
+});
+
 /** Outcome of the Agent an Ask waits on passing it on. */
 export const EscalateResult = Schema.Union([
   Schema.Struct({
@@ -246,6 +278,8 @@ export const AnswerFlowInput = Schema.Union([
   Schema.Struct({
     /** Ask whose answer conversation should be opened. */
     askId: AnswerInput.fields.askId,
+    /** The tool call that asked, carried so the client can tie card to call. */
+    toolCallId: Schema.optionalKey(Schema.String),
   }),
   Schema.Struct({}),
 ]);

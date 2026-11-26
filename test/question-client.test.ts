@@ -25,7 +25,9 @@ const ask = (askId: string) => ({
 });
 const encode = Schema.encodeSync(AskProjection);
 const admitted = Schema.decodeUnknownSync(clientContributionSchemaV1);
-function rows(asks: ReturnType<typeof ask>[]) {
+function rows(
+  asks: readonly (ReturnType<typeof ask> & { toolCallId?: string })[],
+) {
   if (questionClient.contribute === undefined)
     throw new Error("Missing Ask contribution");
   return admitted(
@@ -55,6 +57,14 @@ it("publishes pending questions as footer rows with their existing advertised an
       ],
     },
   ]);
+});
+
+it("carries the asking tool call in the answer intent, so a card ties to its call", () => {
+  const [row] = rows([{ ...ask("ask-one"), toolCallId: "call-7" }]);
+  expect(row?.actions?.[0]?.input).toEqual({
+    askId: "ask-one",
+    toolCallId: "call-7",
+  });
 });
 
 it("keeps independent pending questions and removes answered or declined projections", () => {

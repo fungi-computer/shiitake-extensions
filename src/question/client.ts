@@ -3,9 +3,14 @@ import {
   type ClientContributionV1,
 } from "@fungi.computer/shiitake/client-entry";
 import { questionContract } from "./contract.js";
+import { questionOutcomeLine } from "./outcome.js";
 
 /** Pending decisions take over the composer; the footer row is where a postponed one waits. */
 export default defineClientEntry(questionContract, {
+  describeMessage: (origin, view) =>
+    view.status === "running"
+      ? questionOutcomeLine(view.value, origin.correlation)
+      : undefined,
   contribute: (view): ClientContributionV1 => ({
     chips: [],
     panel:
@@ -52,7 +57,10 @@ export default defineClientEntry(questionContract, {
                 {
                   id: "answerFlow",
                   label: "Answer",
-                  input: { askId: ask.askId },
+                  input:
+                    ask.toolCallId === undefined
+                      ? { askId: ask.askId }
+                      : { askId: ask.askId, toolCallId: ask.toolCallId },
                   awaiting: "question",
                 },
               ],

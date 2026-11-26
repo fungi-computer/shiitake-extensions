@@ -33,6 +33,8 @@ import {
   type AnswerInput,
   DeclineInput,
   ClosedStatus,
+  ClosedOutcome,
+  recentOutcomeLimit,
   AnswerFlowInput,
 } from "./contract.js";
 import {
@@ -84,6 +86,7 @@ const AskRow = Schema.Struct({
   askId: OpenAsk.fields.askId,
   waitingOn: Schema.optional(AttentionRecipientSchema),
   escalated: Schema.optional(AttentionEscalationSchema),
+  toolCallId: Schema.optional(Schema.String),
   questions: Questions,
   status: OpenAsk.fields.status,
   createdAt: OpenAsk.fields.createdAt,
@@ -147,6 +150,13 @@ const collections = {
       key: (row) => row.id,
       index: (row) => row.workId,
     },
+  ),
+  recent: defineCollection(
+    Schema.Struct({
+      sessionId: Schema.String,
+      outcomes: Schema.Array(ClosedOutcome),
+    }),
+    { key: (row) => row.sessionId, index: () => null },
   ),
   closed: defineCollection(ClosedAsk, {
     key: (row) => row.askId,
@@ -233,12 +243,65 @@ function closeAsk(
             : { via: "none" },
     });
     if (toolCallId !== undefined) yield* recordDelivery(ctx, row, toolCallId);
+    yield* rememberOutcome(ctx, row, outcome);
     yield* ctx.state.asks.remove(row.askId);
     if (row.expiry !== null) yield* ctx.timers.cancel(`ask:${row.askId}`);
     if (row.waitingOn !== undefined)
       yield* ctx.timers.cancel(checkTimer(row.askId));
     yield* ctx.attention.clear(row.sessionId, row.askId);
     yield* ctx.observe(row.sessionId);
+  });
+}
+
+/** The longest typed answer kept for the timeline; the Agent still gets all of it. */
+const rememberedTextLimit = 500;
+
+/** Keep what a closed ask resolved to, so the person's timeline can name it. */
+function rememberOutcome(
+  ctx: Context,
+  row: AskRow,
+  outcome: Schema.Schema.Type<typeof Outcome>,
+) {
+  return Effect.gen(function* () {
+    if (
+      outcome.status !== "answered" &&
+      outcome.status !== "declined" &&
+      outcome.status !== "expired"
+    )
+      return;
+    const remembered: ClosedOutcome = {
+      askId: row.askId,
+      status: outcome.status,
+    };
+    if ("answers" in outcome)
+      Object.assign(remembered, {
+        answers: Object.fromEntries(
+          Object.entries(outcome.answers).map(([id, answer]) => [
+            id,
+            answer.text === undefined
+              ? answer
+              : {
+                  ...answer,
+                  // By code point, so an emoji is never split.
+                  text: Array.from(answer.text)
+                    .slice(0, rememberedTextLimit)
+                    .join(""),
+                },
+          ]),
+        ),
+      });
+    if ("answeredBy" in outcome)
+      Object.assign(remembered, { answeredBy: outcome.answeredBy });
+    if (outcome.status === "expired")
+      Object.assign(remembered, { action: outcome.action });
+    const prior = yield* ctx.state.recent.get(row.sessionId);
+    const outcomes = [
+      remembered,
+      ...(Option.isSome(prior)
+        ? prior.value.outcomes.filter((entry) => entry.askId !== row.askId)
+        : []),
+    ].slice(0, recentOutcomeLimit);
+    yield* ctx.state.recent.put({ sessionId: row.sessionId, outcomes });
   });
 }
 
@@ -385,6 +448,8 @@ function project(row: AskRow): OpenAsk {
     createdAt: row.createdAt,
     expiresAt: row.expiry?.at ?? null,
   };
+  if (row.toolCallId !== undefined)
+    Object.assign(open, { toolCallId: row.toolCallId });
   if (row.escalated !== undefined)
     Object.assign(open, { escalated: row.escalated });
   return row.waitingOn === undefined
@@ -1318,6 +1383,10 @@ export function questionExtensionFor(
               .peekPage({ index: sessionId, limit: ctx.config.maximumOpen })
               .filter((row) => row.pending === null)
               .map(project),
+            closed: Option.match(ctx.state.recent.peek(sessionId), {
+              onNone: () => [],
+              onSome: (row) => row.outcomes,
+            }),
           }),
       },
       commands: {
@@ -1402,9 +1471,18 @@ export function questionExtensionFor(
             ctx.state.asks
               .page({ index: sessionId, limit: ctx.config.maximumOpen })
               .pipe(
-                Effect.map((rows) => ({
-                  asks: rows.filter((row) => row.pending === null).map(project),
-                })),
+                Effect.flatMap((rows) =>
+                  ctx.state.recent.get(sessionId).pipe(
+                    Effect.map((recent) => ({
+                      asks: rows
+                        .filter((row) => row.pending === null)
+                        .map(project),
+                      closed: Option.isSome(recent)
+                        ? recent.value.outcomes
+                        : [],
+                    })),
+                  ),
+                ),
               ),
         }),
       },
@@ -1544,6 +1622,7 @@ export function questionExtensionFor(
                           runAttemptId: live ? runAttemptId : null,
                           pending: null,
                           createdAt: now,
+                          toolCallId: invocation.toolCallId,
                           expiry:
                             "onExpire" in value
                               ? {

@@ -51,7 +51,13 @@ it("a mail-sent run's ask waits on its sender and parks", async () => {
           waitingOn: scout,
         }),
       ],
+      closed: [],
     });
+    // The asking tool call rides on the open ask, so a client can tell which
+    // call is waiting on its card.
+    expect(JSON.stringify(await questionOf(host).call("list", {}))).toContain(
+      '"toolCallId"',
+    );
     // The child's turn settles with the item named in its reply to the sender.
     expect(fixture.settlements).toEqual([
       expect.objectContaining({
@@ -191,6 +197,18 @@ it("a person may always answer a routed Ask", async () => {
       result: "accepted",
       via: "follow_up",
       commandId: mintedId,
+    });
+    // The person's timeline names what was chosen from the closed outcome,
+    // keyed by the ask the follow-up message's origin points at.
+    await expect(questionOf(host).call("list", {})).resolves.toEqual({
+      asks: [],
+      closed: [
+        {
+          askId,
+          status: "answered",
+          answers: { storage: { selected: ["SQLite"] } },
+        },
+      ],
     });
   } finally {
     await host.close();
@@ -639,6 +657,7 @@ it("a routed ask past its asker's expiry takes the asker's action, never a perso
     expect(snapshot.attention).toEqual([]);
     await expect(questionOf(host).call("list", {})).resolves.toEqual({
       asks: [],
+      closed: [expect.objectContaining({ status: "expired" })],
     });
     expect(snapshot.pending.prompts).toHaveLength(1);
     expect(snapshot.pending.prompts[0]?.text).toContain("SQLite");

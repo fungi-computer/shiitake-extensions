@@ -799,18 +799,16 @@ function goalModule(
                   reason: decoded,
                 };
               }
-              // A question the Agent asked and a person has yet to answer is
-              // unfinished work: the goal waits for it, or the Agent withdraws it.
-              // Only questions are visible here. An approval parked by the Hub is
-              // not Session attention yet, so for approvals the goal rules alone
-              // ("wait for any approval you asked for") carry the duty.
+              // A question or a Hub-parked approval the Agent asked and a person has
+              // yet to answer is unfinished work: the goal waits for it, or the
+              // Agent withdraws it. Both are Session attention.
               if (
                 status === "complete" &&
                 (yield* ctx.attention.awaitsDecision(sessionId))
               )
                 return yield* Effect.fail(
                   conflict(
-                    "A question is still waiting for a person; wait for the answer, or withdraw it with question.withdraw, before completing the goal",
+                    "A question or approval is still waiting for a person; wait for the answer, or withdraw a question with question.withdraw, before completing the goal",
                   ),
                 );
               // Only a person discards a live goal; the model may clear a paused one.

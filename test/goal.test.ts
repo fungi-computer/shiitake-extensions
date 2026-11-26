@@ -21,6 +21,7 @@ import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 
 import { questionExtension } from "../src/question/host.js";
+import { hubApprovalCaller } from "../src/question/contract.js";
 import { goalContract } from "../src/goal/contract.js";
 import { goalExtension, goalExtensionFor } from "../src/goal/host.js";
 import type { SubagentSource } from "../src/subagents/host.js";
@@ -2790,7 +2791,7 @@ it("resumes setup after a plain-text name question and waits on the actual name 
   }
 });
 
-it("a goal cannot complete while a question waits for a person, and can once it is gone", async () => {
+it("a goal cannot complete while a question or approval waits for a person, and can once it is gone", async () => {
   const outcomes: string[] = [];
   const asker = defineExtension({
     id: ExtensionId.make("test-asker-open"),
@@ -2865,6 +2866,64 @@ it("a goal cannot complete while a question waits for a person, and can once it 
     await Effect.runPromise(
       host.agent.session("garden").send("Go on", {
         requestId: "go-on",
+        delivery: "followUp",
+      }),
+    );
+    await host.drain();
+    expect(outcomes.some((outcome) => outcome.includes('"complete"'))).toBe(
+      true,
+    );
+  } finally {
+    await host.close();
+  }
+});
+
+it("a goal cannot complete while a Hub-parked approval holds the Session, and can after its release", async () => {
+  const outcomes: string[] = [];
+  const host = await openAgent(
+    sqliteOwner().owner,
+    grantAll([goalExtension, questionExtension]),
+    {
+      tools: updateEveryExecute(
+        { status: "complete", reason: "Everything is done" },
+        outcomes,
+      ),
+      model: scriptedModel([
+        fauxAssistantMessage(fauxToolCall("execute", { code: "done" }), {
+          stopReason: "toolUse",
+        }),
+        fauxAssistantMessage("still waiting"),
+        fauxAssistantMessage(fauxToolCall("execute", { code: "done" }), {
+          stopReason: "toolUse",
+        }),
+        fauxAssistantMessage("finished"),
+      ]),
+    },
+  );
+  try {
+    const session = host.session("garden");
+    const question = session.extension("botanical-session-question");
+    await bindSessionExtension(session, goalContract).call("set", {
+      objective: "Add the widget",
+      expectedRevision: null,
+      requestId: "approval-goal",
+    });
+    const hub = { agentId: hubApprovalCaller, sessionId: "garden" };
+    await question.call(
+      "holdApproval",
+      {
+        approvalId: "record-1",
+        summary: "Tourtois: Add a widget to your dashboard",
+        expiresAt: Date.now() + 86_400_000,
+      },
+      hub,
+    );
+    await host.drain();
+    expect(outcomes[0]).toContain("still waiting for a person");
+    await question.call("releaseApproval", { approvalId: "record-1" }, hub);
+    await Effect.runPromise(
+      host.agent.session("garden").send("Go on", {
+        requestId: "approval-go-on",
         delivery: "followUp",
       }),
     );

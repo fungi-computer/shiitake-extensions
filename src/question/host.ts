@@ -36,6 +36,7 @@ import {
   ClosedOutcome,
   recentOutcomeLimit,
   AnswerFlowInput,
+  hubApprovalCaller,
 } from "./contract.js";
 import {
   advanceAnswerFlow,
@@ -166,6 +167,15 @@ const collections = {
     key: (row) => row.id,
     index: (row) => row.digest,
   }),
+  /** The Session and approval a hold's expiry timer clears; its id is the timer's hashed key. */
+  holds: defineCollection(
+    Schema.Struct({
+      id: Schema.String,
+      sessionId: Schema.String,
+      approvalId: Schema.String,
+    }),
+    { key: (row) => row.id, index: (row) => row.sessionId },
+  ),
   asks: defineCollection(AskRow, {
     key: (row) => row.askId,
     index: (row) => row.sessionId,
@@ -743,6 +753,34 @@ function respondPerson(
         : Effect.succeed(result),
     ),
   );
+}
+
+/** The attention id of one Hub-parked approval, apart from the asks' own ids. */
+function approvalAttentionId(approvalId: string): string {
+  return `approval:${approvalId}`.slice(0, 128);
+}
+
+/** The id of a hold's row, hashed so a long Session and approval id never pass a timer key's cap. */
+const holdId = (sessionId: string, approvalId: string) =>
+  createHash("sha256")
+    .update(JSON.stringify([sessionId, approvalId]))
+    .digest("hex");
+const holdTimerKey = (id: string) => `hold:${id}`;
+/** A hold is cleared this long after its approval would have expired, if nothing released it. */
+const holdExpiryMarginMs = 10 * 60_000;
+
+/** Only the Hub host holds or releases an approval; a human client has no caller. */
+function requireHub(
+  caller: Readonly<{ agentId: string }> | undefined,
+): Effect.Effect<void, ExtensionCommandError> {
+  return caller?.agentId === hubApprovalCaller
+    ? Effect.void
+    : Effect.fail(
+        new ExtensionCommandError({
+          reason: "rejected",
+          message: "Only the Hub host holds or releases an approval",
+        }),
+      );
 }
 
 /** The attention item for one open ask, waiting on an Agent or a person. */
@@ -1365,6 +1403,18 @@ export function questionExtensionFor(
                   }
                   return;
                 }
+                if (timer.key.startsWith("hold:")) {
+                  const hold = yield* ctx.state.holds.get(timer.key.slice(5));
+                  if (Option.isNone(hold)) return;
+                  const { sessionId, approvalId } = hold.value;
+                  yield* ctx.state.holds.remove(hold.value.id);
+                  yield* ctx.attention.clear(
+                    sessionId,
+                    approvalAttentionId(approvalId),
+                  );
+                  yield* ctx.observe(sessionId);
+                  return;
+                }
                 if (!timer.key.startsWith("ask:")) return;
                 const row = yield* ctx.state.asks.get(timer.key.slice(4));
                 if (Option.isSome(row))
@@ -1467,6 +1517,43 @@ export function questionExtensionFor(
           },
           decline: ({ sessionId, input }) =>
             respondPerson(ctx, sessionId, { kind: "decline", ...input }),
+          // A Hub-parked approval is a wait on a person like any question: it
+          // is Session attention, so a goal cannot complete while it is open.
+          holdApproval: ({ sessionId, input, caller }) =>
+            Effect.gen(function* () {
+              yield* requireHub(caller);
+              const clearAt = input.expiresAt + holdExpiryMarginMs;
+              yield* ctx.attention.set(sessionId, {
+                id: approvalAttentionId(input.approvalId),
+                kind: "approval",
+                summary: input.summary,
+                since: yield* Clock.currentTimeMillis,
+                expiresAt: input.expiresAt,
+              });
+              // However the release is lost, the hold ends with its approval.
+              const id = holdId(sessionId, input.approvalId);
+              yield* ctx.state.holds.put({
+                id,
+                sessionId,
+                approvalId: input.approvalId,
+              });
+              yield* ctx.timers.set(holdTimerKey(id), clearAt);
+              yield* ctx.observe(sessionId);
+              return {};
+            }),
+          releaseApproval: ({ sessionId, input, caller }) =>
+            Effect.gen(function* () {
+              yield* requireHub(caller);
+              yield* ctx.attention.clear(
+                sessionId,
+                approvalAttentionId(input.approvalId),
+              );
+              const id = holdId(sessionId, input.approvalId);
+              yield* ctx.state.holds.remove(id);
+              yield* ctx.timers.cancel(holdTimerKey(id));
+              yield* ctx.observe(sessionId);
+              return {};
+            }),
           list: ({ sessionId }) =>
             ctx.state.asks
               .page({ index: sessionId, limit: ctx.config.maximumOpen })

@@ -1,5 +1,21 @@
 # @fungi.computer/shiitake-extensions
 
+## 0.14.0
+
+### Minor Changes
+
+- Changes since 0.13.19:
+
+  - fix(approvals): hash the hold timer key and prove an old store opens
+  - fix(hub): bound and always release a parked approval's hold
+  - feat(hub): a parked approval holds the asking Session until it ends
+
+### Patch Changes
+
+- @fungi.computer/knapsack@0.4.36
+  - @fungi.computer/mycelium@0.5.5
+  - @fungi.computer/shiitake@0.23.9
+
 ## 0.13.19
 
 ### Patch Changes

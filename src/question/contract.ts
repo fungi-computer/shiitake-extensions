@@ -284,6 +284,32 @@ export const AnswerFlowInput = Schema.Union([
   Schema.Struct({}),
 ]);
 
+/** One parked approval's id; the Hub's own record id. */
+const ApprovalWaitId = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(128),
+);
+/** A parked approval the Session waits on: its id and what it asks, in a line. */
+export const ApprovalWaitInput = Schema.Struct({
+  /** The Hub's own record id for the approval. */
+  approvalId: ApprovalWaitId,
+  /** One plain line saying what the person is asked to approve. */
+  summary: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200)),
+  /** When the approval expires: the hold never outlives it by more than a margin. */
+  expiresAt: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+});
+/**
+ * The caller identity only the Hub host supplies when it holds or releases a
+ * parked approval. Commands decode no caller from HTTP, so a human client
+ * reaching these commands has none and is refused.
+ */
+export const hubApprovalCaller = "hub:approvals";
+/** The approval that ended, so the Session stops waiting on it. */
+export const ApprovalReleaseInput = Schema.Struct({
+  /** The Hub's own record id for the approval. */
+  approvalId: ApprovalWaitId,
+});
+
 /** Human reads and the ordinary projection slot; model operations belong to the host. */
 export const questionContract = {
   /** Stable extension identity. */
@@ -339,6 +365,24 @@ export const questionContract = {
       input: DeclineInput,
       /** Return admission or the ask's terminal state. */
       output: HumanResult,
+    },
+    /** Host only: the Hub parked an App approval for this Session; it waits for a person like a question. */
+    holdApproval: {
+      /** The Session owns the wait. */
+      scope: "session",
+      /** The approval's own id and a short line saying what it is. */
+      input: ApprovalWaitInput,
+      /** Nothing to return. */
+      output: Schema.Struct({}),
+    },
+    /** Host only: that approval ended (answered, denied, expired or withdrawn); the Session no longer waits on it. */
+    releaseApproval: {
+      /** The Session owns the wait. */
+      scope: "session",
+      /** The approval's own id. */
+      input: ApprovalReleaseInput,
+      /** Nothing to return. */
+      output: Schema.Struct({}),
     },
     /** Read the Session's open asks. */
     list: {

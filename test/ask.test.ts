@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi, describe } from "vitest";
 import { z } from "zod";
 import {
   botanicalAgentExtensions,
@@ -12,6 +12,7 @@ import {
 } from "../src/roster.js";
 import { openAgent, sqliteOwner } from "./fixtures/host.js";
 import { questionHost, questions, mintedId } from "./fixtures/ask.js";
+import { hubApprovalCaller } from "../src/question/contract.js";
 
 afterEach(() => vi.useRealTimers());
 
@@ -2117,4 +2118,126 @@ it("the same question with a different expiry action is a different ask and neve
     await host.close();
     store.close();
   }
+});
+
+describe("a Hub-parked approval held on the Session", () => {
+  const hub = { agentId: hubApprovalCaller, sessionId: "questions" };
+  const hold = (expiresAt: number) => ({
+    approvalId: "record-1",
+    summary: "Tourtois: Add a widget to your dashboard",
+    expiresAt,
+  });
+  const approvals = async (
+    host: Awaited<ReturnType<typeof questionHost>>["host"],
+  ) =>
+    (await host.session("questions").read()).attention.filter(
+      ({ kind }) => kind === "approval",
+    );
+
+  it("is Session attention until it is released, and releasing twice is harmless", async () => {
+    const fixture = await questionHost();
+    const { host, store } = fixture;
+    try {
+      await fixture.park();
+      const expiresAt = Date.now() + 86_400_000;
+      await questionOf(host).call("holdApproval", hold(expiresAt), hub);
+      // Holding again is an update, never a second item.
+      await questionOf(host).call("holdApproval", hold(expiresAt), hub);
+      expect(await approvals(host)).toEqual([
+        expect.objectContaining({
+          extensionId: questionId,
+          id: "approval:record-1",
+          summary: "Tourtois: Add a widget to your dashboard",
+          expiresAt,
+        }),
+      ]);
+      await questionOf(host).call(
+        "releaseApproval",
+        { approvalId: "record-1" },
+        hub,
+      );
+      await questionOf(host).call(
+        "releaseApproval",
+        { approvalId: "record-1" },
+        hub,
+      );
+      expect(await approvals(host)).toEqual([]);
+    } finally {
+      await host.close();
+      store.close();
+    }
+  });
+
+  it("can be held or released only by the Hub host, never by a human client or another Agent", async () => {
+    const fixture = await questionHost();
+    const { host, store } = fixture;
+    try {
+      await fixture.park();
+      const input = hold(Date.now() + 86_400_000);
+      await expect(
+        questionOf(host).call("holdApproval", input),
+      ).rejects.toThrow("Only the Hub host holds or releases an approval");
+      await expect(
+        questionOf(host).call("holdApproval", input, {
+          agentId: "agent-someone-else",
+          sessionId: "questions",
+        }),
+      ).rejects.toThrow("Only the Hub host");
+      await questionOf(host).call("holdApproval", input, hub);
+      await expect(
+        questionOf(host).call("releaseApproval", { approvalId: "record-1" }),
+      ).rejects.toThrow("Only the Hub host");
+      expect(await approvals(host)).toHaveLength(1);
+    } finally {
+      await host.close();
+      store.close();
+    }
+  });
+
+  it("keeps a timer key within its cap however long the approval id is", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const createdAt = Date.parse("2026-11-26T12:00:00Z");
+    vi.setSystemTime(createdAt);
+    const fixture = await questionHost();
+    const { host, store } = fixture;
+    try {
+      await fixture.park();
+      const approvalId = "r".repeat(128);
+      const expiresAt = createdAt + 86_400_000;
+      await questionOf(host).call(
+        "holdApproval",
+        { approvalId, summary: "Long", expiresAt },
+        hub,
+      );
+      expect(await approvals(host)).toHaveLength(1);
+      vi.setSystemTime(expiresAt + 11 * 60_000);
+      await host.reconcile();
+      expect(await approvals(host)).toEqual([]);
+    } finally {
+      await host.close();
+      store.close();
+    }
+  });
+
+  it("is cleared at its approval's expiry plus a margin even when nothing released it", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const createdAt = Date.parse("2026-11-26T12:00:00Z");
+    vi.setSystemTime(createdAt);
+    const fixture = await questionHost();
+    const { host, store } = fixture;
+    try {
+      await fixture.park();
+      const expiresAt = createdAt + 86_400_000;
+      await questionOf(host).call("holdApproval", hold(expiresAt), hub);
+      vi.setSystemTime(expiresAt + 5 * 60_000);
+      await host.reconcile();
+      expect(await approvals(host)).toHaveLength(1);
+      vi.setSystemTime(expiresAt + 11 * 60_000);
+      await host.reconcile();
+      expect(await approvals(host)).toEqual([]);
+    } finally {
+      await host.close();
+      store.close();
+    }
+  });
 });

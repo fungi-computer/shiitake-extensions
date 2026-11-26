@@ -3,7 +3,7 @@ import {
   fauxAssistantMessage,
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
-import { fromTypedSandbox } from "@fungi.computer/mycelium/effect";
+import { fromTypedSandbox } from "@fungi.computer/mycelium/typed-sandbox";
 import type { SandboxRequest, SandboxValue } from "@fungi.computer/mycelium";
 import type { ExtensionRosterV0 } from "@fungi.computer/shiitake/extensions";
 import * as Effect from "effect/Effect";

@@ -5,7 +5,7 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import { getSystemMessageText } from "@earendil-works/pi-ai";
 import type { SandboxRequest } from "@fungi.computer/mycelium";
-import { fromTypedSandbox } from "@fungi.computer/mycelium/effect";
+import { fromTypedSandbox } from "@fungi.computer/mycelium/typed-sandbox";
 import { bindSessionExtension } from "@fungi.computer/shiitake/client";
 import { ShiitakeError } from "@fungi.computer/shiitake";
 import type { ShiitakeEffectOptions } from "@fungi.computer/shiitake/effect";

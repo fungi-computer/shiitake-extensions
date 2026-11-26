@@ -5,7 +5,7 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import { getSystemMessageText } from "@earendil-works/pi-ai";
 import type { FilesPort } from "@fungi.computer/knapsack";
-import { fromTypedSandbox } from "@fungi.computer/mycelium/effect";
+import { fromTypedSandbox } from "@fungi.computer/mycelium/typed-sandbox";
 import { bindSessionExtension } from "@fungi.computer/shiitake/client";
 import * as Effect from "effect/Effect";
 import { expect, it } from "vitest";

@@ -4,7 +4,7 @@ import {
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
 import type { SandboxRequest, SandboxValue } from "@fungi.computer/mycelium";
-import { fromTypedSandbox } from "@fungi.computer/mycelium/effect";
+import { fromTypedSandbox } from "@fungi.computer/mycelium/typed-sandbox";
 import { bindAgentExtension } from "@fungi.computer/shiitake/client";
 import * as Effect from "effect/Effect";
 import { z } from "zod";
